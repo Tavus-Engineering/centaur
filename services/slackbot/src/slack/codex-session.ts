@@ -155,11 +155,11 @@ export class CodexSessionRenderer {
   async done(agentSessionId: string): Promise<void> {
     const state = getState(agentSessionId)
     if (state.done) return
-    state.done = true
     await this.renderer.done(
       agentSessionId,
       state.threadId ? codexFooter(state.threadId) : undefined
     )
+    state.done = true
     states.delete(agentSessionId)
   }
 
@@ -471,7 +471,7 @@ function itemStatus(item: any, eventType: string, exitCode?: number | null): Har
   const status = String(item.status ?? '').toLowerCase()
   if (status === 'failed' || status === 'declined') return 'error'
   if (status === 'completed' || eventType === 'item.completed') {
-    return exitCode === 0 || exitCode === null || exitCode === undefined ? 'complete' : 'error'
+    return 'complete'
   }
   return 'in_progress'
 }

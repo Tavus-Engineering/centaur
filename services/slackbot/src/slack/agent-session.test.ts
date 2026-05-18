@@ -154,4 +154,59 @@ describe('AgentSessionRenderer', () => {
       sources: undefined
     })
   })
+
+  it('clears assistant status even when closing the stream fails', async () => {
+    const calls: Array<{ method: string; params: any }> = []
+    let stopAttempts = 0
+    const client = {
+      assistant: {
+        threads: {
+          setStatus: async (params: any) => {
+            calls.push({ method: 'assistant.threads.setStatus', params })
+            return { ok: true }
+          }
+        }
+      },
+      chat: {
+        startStream: async (params: any) => {
+          calls.push({ method: 'chat.startStream', params })
+          return { ok: true, ts: '1778866940.295499' }
+        },
+        appendStream: async (params: any) => {
+          calls.push({ method: 'chat.appendStream', params })
+          return { ok: true }
+        },
+        stopStream: async (params: any) => {
+          calls.push({ method: 'chat.stopStream', params })
+          stopAttempts += 1
+          if (stopAttempts === 2) return { ok: true }
+          return { ok: false, error: 'stream_already_closed' }
+        }
+      }
+    }
+
+    const renderer = new AgentSessionRenderer(client as any)
+    const { sessionId } = await renderer.open({
+      channel: 'C123',
+      parentTs: '1778866921.505479',
+      recipientTeamId: 'T123',
+      recipientUserId: 'U123',
+      title: 'Centaur execution'
+    })
+
+    await renderer.text(sessionId, 'Finished reply')
+    await expect(renderer.done(sessionId)).rejects.toThrow('stream_already_closed')
+
+    expect(calls.at(-1)).toEqual({
+      method: 'assistant.threads.setStatus',
+      params: {
+        channel_id: 'C123',
+        thread_ts: '1778866921.505479',
+        status: ''
+      }
+    })
+
+    await expect(renderer.done(sessionId)).resolves.toBeUndefined()
+    expect(stopAttempts).toBe(2)
+  })
 })
