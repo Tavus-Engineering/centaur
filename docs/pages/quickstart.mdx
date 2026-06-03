@@ -166,6 +166,12 @@ for example `app_mentions:read` and `chat:write`. If you enable DM events such
 as `message.im`, Slack will also require direct-message scopes such as
 `im:history`.
 
+Message events also unlock mention-free replies: with `message.im` enabled the
+bot answers DMs directly, and with `message.channels` (plus `channels:history`)
+it follows up in any thread where it has already replied, without needing
+another mention. If you subscribe to `app_mention` only, the bot responds to
+explicit mentions and nothing else.
+
 Save changes and reinstall the app.
 
 ## 7. Try Slack mentions

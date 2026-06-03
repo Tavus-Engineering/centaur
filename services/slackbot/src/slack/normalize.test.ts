@@ -212,7 +212,10 @@ describe('normalizeSlackEnvelope', () => {
               elements: [
                 {
                   type: 'rich_text_quote',
-                  elements: [{ type: 'user', user_id: 'UBOT' }, { type: 'text', text: ' help' }]
+                  elements: [
+                    { type: 'user', user_id: 'UBOT' },
+                    { type: 'text', text: ' help' }
+                  ]
                 },
                 {
                   type: 'rich_text_section',
@@ -577,5 +580,140 @@ describe('normalizeSlackEnvelope', () => {
     expect(normalized?.is_mention).toBe(true)
     expect(normalized?.parts).toEqual([{ type: 'text', text: '--invest pick this up' }])
     expect(normalized?.history_messages).toBeUndefined()
+  })
+
+  it('treats a DM without a mention as addressed', async () => {
+    const normalized = await normalizeSlackEnvelope({
+      envelope: {
+        type: 'event_callback',
+        team_id: 'T123',
+        event_id: 'Ev-dm-no-mention',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'D123',
+          channel_type: 'im',
+          ts: '1778875070.942789',
+          text: 'what tools do you have access to?'
+        }
+      },
+      botUserId: 'UBOT',
+      client
+    })
+
+    expect(normalized?.is_mention).toBe(false)
+    expect(normalized?.is_addressed).toBe(true)
+  })
+
+  it('treats a thread reply as addressed when the bot already replied in the thread', async () => {
+    const replies = mock(async () => ({
+      ok: true,
+      messages: [
+        {
+          type: 'message',
+          user: 'U123',
+          ts: '1778875060.000100',
+          text: '<@UBOT> can you look into this?'
+        },
+        {
+          type: 'message',
+          user: 'UBOT',
+          ts: '1778875065.000200',
+          text: 'Looking now.'
+        }
+      ]
+    }))
+
+    const normalized = await normalizeSlackEnvelope({
+      envelope: {
+        type: 'event_callback',
+        team_id: 'T123',
+        event_id: 'Ev-thread-follow-up',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'C123',
+          channel_type: 'channel',
+          thread_ts: '1778875060.000100',
+          ts: '1778875070.942789',
+          text: 'any update?'
+        }
+      },
+      botUserId: 'UBOT',
+      client: {
+        token: 'xoxb-test-token',
+        conversations: { replies }
+      } as any
+    })
+
+    expect(normalized?.is_mention).toBe(false)
+    expect(normalized?.is_addressed).toBe(true)
+    expect(normalized?.history_messages).toHaveLength(2)
+  })
+
+  it('does not treat a thread reply as addressed when the bot never replied in the thread', async () => {
+    const replies = mock(async () => ({
+      ok: true,
+      messages: [
+        {
+          type: 'message',
+          user: 'U456',
+          ts: '1778875060.000100',
+          text: 'kicking off a discussion'
+        }
+      ]
+    }))
+
+    const normalized = await normalizeSlackEnvelope({
+      envelope: {
+        type: 'event_callback',
+        team_id: 'T123',
+        event_id: 'Ev-thread-bystander',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'C123',
+          channel_type: 'channel',
+          thread_ts: '1778875060.000100',
+          ts: '1778875070.942789',
+          text: 'agreed'
+        }
+      },
+      botUserId: 'UBOT',
+      client: {
+        token: 'xoxb-test-token',
+        conversations: { replies }
+      } as any
+    })
+
+    expect(normalized?.is_mention).toBe(false)
+    expect(normalized?.is_addressed).toBe(false)
+  })
+
+  it('does not treat a top-level channel message without a mention as addressed', async () => {
+    const replies = mock(async () => ({ ok: true, messages: [] }))
+    const normalized = await normalizeSlackEnvelope({
+      envelope: {
+        type: 'event_callback',
+        team_id: 'T123',
+        event_id: 'Ev-channel-top-level',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'C123',
+          channel_type: 'channel',
+          ts: '1778875070.942789',
+          text: 'unrelated chatter'
+        }
+      },
+      botUserId: 'UBOT',
+      client: {
+        token: 'xoxb-test-token',
+        conversations: { replies }
+      } as any
+    })
+
+    expect(normalized?.is_addressed).toBe(false)
+    expect(replies).not.toHaveBeenCalled()
   })
 })

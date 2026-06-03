@@ -61,6 +61,7 @@ function baseEvent(overrides: Partial<NormalizedSlackEvent> = {}): NormalizedSla
     channel_id: 'C',
     thread_ts: '1.0',
     is_mention: true,
+    is_addressed: true,
     parts: [{ type: 'text', text: 'thanks!' }],
     history_messages: [
       {
@@ -129,7 +130,11 @@ describe('shouldAckWithReaction', () => {
     ).toBe(false)
   })
 
-  it('does not ack a non-mention message', () => {
-    expect(shouldAckWithReaction(baseEvent({ is_mention: false }))).toBe(false)
+  it('does not ack a message that is not addressed to the bot', () => {
+    expect(shouldAckWithReaction(baseEvent({ is_mention: false, is_addressed: false }))).toBe(false)
+  })
+
+  it('acks an addressed follow-up even without a mention', () => {
+    expect(shouldAckWithReaction(baseEvent({ is_mention: false, is_addressed: true }))).toBe(true)
   })
 })
