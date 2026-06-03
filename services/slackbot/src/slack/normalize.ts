@@ -97,17 +97,22 @@ export async function normalizeSlackEnvelope(opts: {
   const isMention =
     event.type === 'app_mention' ||
     Boolean(opts.botUserId && messageMentionsBot(event, opts.botUserId))
-  const historyMessages = isMention
-    ? await collectThreadHistorySafely({
-        client: opts.client,
-        channel: event.channel,
-        threadTs,
-        currentTs: event.ts,
-        teamId,
-        botUserId: opts.botUserId,
-        botId: opts.botId
-      })
-    : []
+  const isDm = event.channel_type === 'im'
+  const isThreadReply = Boolean(event.thread_ts) && event.thread_ts !== event.ts
+  const historyMessages =
+    isMention || isDm || isThreadReply
+      ? await collectThreadHistorySafely({
+          client: opts.client,
+          channel: event.channel,
+          threadTs,
+          currentTs: event.ts,
+          teamId,
+          botUserId: opts.botUserId,
+          botId: opts.botId
+        })
+      : []
+  const botInThread = historyMessages.some(message => message.role === 'assistant')
+  const isAddressed = isMention || isDm || (isThreadReply && botInThread)
 
   return {
     thread_key: `slack:${teamId}:${event.channel}:${threadTs}`,
@@ -118,6 +123,7 @@ export async function normalizeSlackEnvelope(opts: {
     channel_id: event.channel,
     thread_ts: threadTs,
     is_mention: isMention,
+    is_addressed: isAddressed,
     parts,
     ...(historyMessages.length ? { history_messages: historyMessages } : {}),
     slack: {

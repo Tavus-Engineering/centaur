@@ -43,10 +43,10 @@ export function isTrivialAck(text: string): boolean {
   return Boolean(normalized) && ACK_PHRASES.has(normalized)
 }
 
-// Mentions inside an existing thread that already has an assistant reply, with
+// Messages inside an existing thread that already has an assistant reply, with
 // a short whitelisted ack as the only part, get a reaction instead of a spawn.
 export function shouldAckWithReaction(event: NormalizedSlackEvent): boolean {
-  if (!event.is_mention) return false
+  if (!event.is_addressed) return false
   if (event.parts.length !== 1) return false
   const part = event.parts[0]
   if (!part || part.type !== 'text') return false
