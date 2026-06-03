@@ -1,5 +1,12 @@
 # Centaur — Developer Guide
 
+## Fork tracking (Tavus)
+
+This repo is Tavus's fork of [paradigmxyz/centaur](https://github.com/paradigmxyz/centaur).
+**Every PR against this fork must add one line to [FORK.md](FORK.md)** — the PR's head
+commit hash, a one-line description, and the PR URL — so we always know exactly how
+this fork differs from upstream. No exceptions; reviewers should block PRs that skip it.
+
 ## Quick Start
 
 ### 1. Clone and configure
