@@ -716,4 +716,32 @@ describe('normalizeSlackEnvelope', () => {
     expect(normalized?.is_addressed).toBe(false)
     expect(replies).not.toHaveBeenCalled()
   })
+
+  it('does not treat bare engine words as a wake word', async () => {
+    const replies = mock(async () => ({ ok: true, messages: [] }))
+    const normalized = await normalizeSlackEnvelope({
+      envelope: {
+        type: 'event_callback',
+        team_id: 'T123',
+        event_id: 'Ev-bare-engine-word',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'C123',
+          channel_type: 'channel',
+          ts: '1778875070.942789',
+          text: 'claude and codex are getting pretty good these days'
+        }
+      },
+      botUserId: 'UBOT',
+      client: {
+        token: 'xoxb-test-token',
+        conversations: { replies }
+      } as any
+    })
+
+    expect(normalized?.is_mention).toBe(false)
+    expect(normalized?.is_addressed).toBe(false)
+    expect(replies).not.toHaveBeenCalled()
+  })
 })

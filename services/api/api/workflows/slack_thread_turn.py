@@ -26,7 +26,10 @@ _PROMPT_FLAG_RE = re.compile(
 # Bare engine names select a harness without flag syntax ("claude, review
 # this PR"). Only the unambiguous engine words participate \u2014 "amp" and "pi"
 # collide with ordinary English too often. Unlike flags, bare words are left
-# in the message text.
+# in the message text. They are selectors, not triggers: this parser only
+# runs on turns the slackbot already addressed to the bot (a mention, a DM,
+# or a follow-up in a thread the bot participates in), so a bystander channel
+# message containing "claude" never wakes the bot or reaches this code.
 _BARE_HARNESS_WORD_RE = re.compile(r"\b(claude|codex)\b", re.IGNORECASE)
 _BARE_PERSONA_PROMPT = (
     "Briefly introduce yourself using your active persona instructions and ask what "
