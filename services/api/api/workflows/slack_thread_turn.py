@@ -23,6 +23,14 @@ _PROMPT_FLAG_RE = re.compile(
     r"(^|\s)(`?)(--|[\u2013\u2014])([a-z][a-z0-9-]*)(?=\s|`|$)",
     re.IGNORECASE,
 )
+# Bare engine names select a harness without flag syntax ("claude, review
+# this PR"). Only the unambiguous engine words participate \u2014 "amp" and "pi"
+# collide with ordinary English too often. Unlike flags, bare words are left
+# in the message text. They are selectors, not triggers: this parser only
+# runs on turns the slackbot already addressed to the bot (a mention, a DM,
+# or a follow-up in a thread the bot participates in), so a bystander channel
+# message containing "claude" never wakes the bot or reaches this code.
+_BARE_HARNESS_WORD_RE = re.compile(r"\b(claude|codex)\b", re.IGNORECASE)
 _BARE_PERSONA_PROMPT = (
     "Briefly introduce yourself using your active persona instructions and ask what "
     "we should work on."
@@ -181,6 +189,11 @@ def _extract_prompt_selection_from_text(
             persona = classified_persona
 
     cleaned = _strip_ranges(text, ranges) if ranges else text.strip()
+    if harness is None:
+        bare = _BARE_HARNESS_WORD_RE.search(cleaned)
+        if bare:
+            word = bare.group(1).lower()
+            harness = _PROMPT_FLAG_ALIASES.get(word, word)
     return harness, persona, cleaned
 
 

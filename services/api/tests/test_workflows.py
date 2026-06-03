@@ -414,6 +414,18 @@ def test_recovery_command_paraphrases_are_recognized():
         ("please use --opus and review this", None, None, "please use and review this"),
         ("please use --model opus and review this", None, None, "please use and review this"),
         ("please use `--model opus` and review this", None, None, "please use and review this"),
+        # Bare engine words select a harness and stay in the text.
+        ("claude review this PR", "claude-code", None, "claude review this PR"),
+        ("use codex for this one", "codex", None, "use codex for this one"),
+        ("CLAUDE, what do you think?", "claude-code", None, "CLAUDE, what do you think?"),
+        # First bare word wins when both appear.
+        ("claude not codex please", "claude-code", None, "claude not codex please"),
+        # Explicit flags take precedence over bare words.
+        ("--codex but ask claude later", "codex", None, "but ask claude later"),
+        # Substrings of larger words do not match.
+        ("claudette runs the codexes", None, None, "claudette runs the codexes"),
+        # Bare engine words compose with persona flags.
+        ("--invest claude review this", "claude-code", "invest", "claude review this"),
     ],
 )
 def test_prompt_selection_extraction_handles_slack_flag_shapes(
