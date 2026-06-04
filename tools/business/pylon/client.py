@@ -1,12 +1,35 @@
 """Pylon API client."""
 
-from datetime import datetime, timedelta, timezone
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+
 from centaur_sdk import secret
 
 BASE_URL = "https://api.usepylon.com"
+
+
+def _clean_issue_ref(issue_ref: str) -> str:
+    """Normalize issue numbers, #numbers, and Pylon issue URLs for API paths."""
+    ref = str(issue_ref).strip()
+    if not ref:
+        raise ValueError("issue_id must not be empty")
+
+    issue_path_match = re.search(r"/issues/([^/?#]+)", ref)
+    if issue_path_match:
+        return issue_path_match.group(1)
+
+    hash_match = re.search(r"#([A-Za-z0-9_-]+)", ref)
+    if hash_match:
+        return hash_match.group(1)
+
+    prefix_match = re.search(r"\bissue\s+([A-Za-z0-9_-]+)\b", ref, flags=re.IGNORECASE)
+    if prefix_match:
+        return prefix_match.group(1)
+
+    return ref.removeprefix("#").strip()
 
 
 class PylonClient:
@@ -47,6 +70,14 @@ class PylonClient:
 
             return response.json()
 
+    def _canonical_issue_id(self, issue_id: str) -> str:
+        """Return the canonical Pylon issue ID for child issue endpoints."""
+        ref = _clean_issue_ref(issue_id)
+        if ref.isdigit():
+            issue = self.get_issue(ref)
+            return str(issue.get("id") or ref)
+        return ref
+
     def get_me(self) -> dict:
         """Get details of the organization associated with the API token."""
         return self._request("GET", "/me")
@@ -68,9 +99,9 @@ class PylonClient:
             List of issue dicts
         """
         if not end_time:
-            end_time = datetime.now(timezone.utc).isoformat()
+            end_time = datetime.now(UTC).isoformat()
         if not start_time:
-            start_dt = datetime.now(timezone.utc) - timedelta(days=days)
+            start_dt = datetime.now(UTC) - timedelta(days=days)
             start_time = start_dt.isoformat()
 
         response = self._request(
@@ -79,9 +110,58 @@ class PylonClient:
         return response.get("data", [])
 
     def get_issue(self, issue_id: str) -> dict:
-        """Get an issue by its ID or number."""
+        """Get an issue by its ID, number, #number, or Pylon issue URL.
+
+        This returns the issue metadata and body. To read the actual customer/internal
+        conversation, use get_issue_context or get_issue_messages instead.
+        """
+        issue_id = _clean_issue_ref(issue_id)
         response = self._request("GET", f"/issues/{issue_id}")
         return response.get("data", {})
+
+    def get_issue_messages(self, issue_id: str) -> list[dict]:
+        """Get all messages for a Pylon issue.
+
+        Use this when a user asks to read a Pylon thread. Pylon's issue detail
+        endpoint accepts an issue number, but the messages endpoint is documented
+        around the canonical issue ID; this method resolves numeric refs first.
+        """
+        canonical_id = self._canonical_issue_id(issue_id)
+        response = self._request("GET", f"/issues/{canonical_id}/messages")
+        return response.get("data", [])
+
+    def get_issue_threads(self, issue_id: str) -> list[dict]:
+        """Get all internal threads for a Pylon issue.
+
+        Use this with get_issue_messages when investigating support context. Numeric
+        issue refs like "16412" or "#16412" are resolved to the canonical Pylon ID.
+        """
+        canonical_id = self._canonical_issue_id(issue_id)
+        response = self._request("GET", f"/issues/{canonical_id}/threads")
+        return response.get("data", [])
+
+    def get_issue_context(
+        self,
+        issue_id: str,
+        include_messages: bool = True,
+        include_threads: bool = True,
+    ) -> dict[str, Any]:
+        """Read the useful context for a Pylon issue or thread in one call.
+
+        Best first call when a user references "Pylon Issue #16412" or asks to
+        access a Pylon thread. Returns issue details plus messages and internal
+        threads by default.
+        """
+        issue = self.get_issue(issue_id)
+        canonical_id = str(issue.get("id") or _clean_issue_ref(issue_id))
+        result: dict[str, Any] = {"issue": issue}
+        if include_messages:
+            messages_response = self._request("GET", f"/issues/{canonical_id}/messages")
+            result["messages"] = messages_response.get("data", [])
+        if include_threads:
+            threads_response = self._request("GET", f"/issues/{canonical_id}/threads")
+            result["threads"] = threads_response.get("data", [])
+        return result
 
     def search_issues(
         self,

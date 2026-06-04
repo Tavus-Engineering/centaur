@@ -3,13 +3,13 @@
 import json
 import sys
 
+import typer
 from dotenv import load_dotenv
+from rich.console import Console
+
+from centaur_sdk import Table
 
 load_dotenv()
-
-import typer
-from rich.console import Console
-from centaur_sdk import Table
 
 app = typer.Typer(name="pylon", help="Pylon CLI for AI agents")
 console = Console()
@@ -33,7 +33,7 @@ def me():
         console.print(f"[dim]ID: {data.get('id', 'N/A')}[/]")
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -56,7 +56,7 @@ def issues(
         results = client.list_issues(days=days)
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if state:
         results = [i for i in results if i.get("state", "").lower() == state.lower()]
@@ -119,7 +119,7 @@ def issue(
         result = client.get_issue(issue_id)
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if json_output:
         print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stdout)
@@ -148,6 +148,127 @@ def issue(
 
     console.print(f"\n[bold]Created:[/] {result.get('created_at', 'N/A')}")
     console.print(f"[bold]Updated:[/] {result.get('updated_at', 'N/A')}")
+
+
+@app.command()
+def issue_context(
+    issue_id: str = typer.Argument(..., help="Issue ID, number, #number, or Pylon issue URL"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Get issue details, messages, and internal threads.
+
+    Examples:
+        pylon issue-context 16412
+        pylon issue-context "#16412" --json
+    """
+    client = _get_client()
+
+    try:
+        result = client.get_issue_context(issue_id)
+    except RuntimeError as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+    if json_output:
+        print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stdout)
+        raise typer.Exit()
+
+    issue_data = result.get("issue", {})
+    messages = result.get("messages", [])
+    threads = result.get("threads", [])
+
+    console.print(
+        f"\n[bold cyan]#{issue_data.get('number', 'N/A')}[/] {issue_data.get('title', '')}"
+    )
+    console.print(f"[dim]ID: {issue_data.get('id', 'N/A')}[/]")
+    console.print(f"[bold]State:[/] {issue_data.get('state', 'N/A')}")
+    console.print(f"[bold]Messages:[/] {len(messages)}")
+    console.print(f"[bold]Internal threads:[/] {len(threads)}")
+
+    body_html = issue_data.get("body_html")
+    if body_html:
+        console.print("\n[bold]Body HTML:[/]")
+        console.print(body_html)
+
+    if messages:
+        console.print("\n[bold]Recent messages:[/]")
+        for message in messages[-5:]:
+            author = message.get("author") or {}
+            author_name = author.get("name") or author.get("email") or "Unknown"
+            body = message.get("body_html") or message.get("body") or ""
+            console.print(f"[cyan]{author_name}[/]: {body[:500]}")
+
+
+@app.command()
+def issue_messages(
+    issue_id: str = typer.Argument(..., help="Issue ID, number, #number, or Pylon issue URL"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Get all messages on an issue.
+
+    Examples:
+        pylon issue-messages 16412
+        pylon issue-messages "#16412" --json
+    """
+    client = _get_client()
+
+    try:
+        result = client.get_issue_messages(issue_id)
+    except RuntimeError as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+    if json_output:
+        print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stdout)
+        raise typer.Exit()
+
+    if not result:
+        console.print("[yellow]No messages found.[/]")
+        raise typer.Exit()
+
+    for message in result:
+        author = message.get("author") or {}
+        author_name = author.get("name") or author.get("email") or "Unknown"
+        body = message.get("body_html") or message.get("body") or ""
+        console.print(f"\n[bold cyan]{author_name}[/]")
+        console.print(body)
+
+
+@app.command()
+def issue_threads(
+    issue_id: str = typer.Argument(..., help="Issue ID, number, #number, or Pylon issue URL"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Get all internal threads on an issue.
+
+    Examples:
+        pylon issue-threads 16412
+        pylon issue-threads "#16412" --json
+    """
+    client = _get_client()
+
+    try:
+        result = client.get_issue_threads(issue_id)
+    except RuntimeError as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+    if json_output:
+        print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stdout)
+        raise typer.Exit()
+
+    if not result:
+        console.print("[yellow]No threads found.[/]")
+        raise typer.Exit()
+
+    table = Table(title=f"Threads ({len(result)})")
+    table.add_column("Name", style="cyan", max_width=40)
+    table.add_column("ID", style="dim", max_width=40)
+
+    for thread in result:
+        table.add_row(thread.get("name", ""), thread.get("id", ""))
+
+    console.print(table)
 
 
 @app.command()
@@ -187,7 +308,7 @@ def issue_create(
         console.print(f"[dim]ID: {result.get('id')}[/]")
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -222,7 +343,7 @@ def issue_update(
         console.print(f"[green]✓ Updated issue #{result.get('number', 'N/A')}[/]")
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -259,7 +380,7 @@ def issue_search(
         result = client.search_issues(filter_obj, limit=limit)
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     issues_data = result.get("data", [])
 
@@ -307,7 +428,7 @@ def accounts(
         result = client.list_accounts(limit=limit)
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     accounts_data = result.get("data", [])
 
@@ -353,7 +474,7 @@ def account(
         result = client.get_account(account_id)
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if json_output:
         print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stdout)
@@ -404,7 +525,7 @@ def account_create(
         console.print(f"[dim]ID: {result.get('id')}[/]")
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -424,7 +545,7 @@ def contacts(
         results = client.list_contacts()
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if query:
         query_lower = query.lower()
@@ -468,7 +589,7 @@ def contact(
         result = client.get_contact(contact_id)
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if json_output:
         print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stdout)
@@ -493,7 +614,7 @@ def users(
         results = client.list_users()
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if query:
         query_lower = query.lower()
@@ -531,7 +652,7 @@ def teams():
         results = client.list_teams()
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if not results:
         console.print("[yellow]No teams found.[/]")
@@ -560,7 +681,7 @@ def tags(
         results = client.list_tags()
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if object_type:
         results = [t for t in results if t.get("object_type", "").lower() == object_type.lower()]
