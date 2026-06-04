@@ -276,9 +276,11 @@ For tool changes: tools hot-reload, so just verify via `curl -X POST http://loca
 ## Local-First Testing — Never Touch the Deploy Box
 
 **All testing and E2E validation MUST happen on the local Kubernetes stack** (`just up` on this machine).
-The deploy box is **production**. Changes reach it via `git push` → GitHub Actions auto-deploy. The only reasons to SSH into it are:
+The deploy box is **production**. Do not assume `git push` deployed anything unless
+you can see the relevant GitHub Actions run or the running deployment's image/commit
+changed. The only reasons to SSH into it are:
 - Checking logs (`kubectl logs`, VictoriaLogs queries) for debugging production issues
-- Emergency manual intervention — **only when the user explicitly asks**
+- Emergency manual intervention or deployment — **only when the user explicitly asks**
 
 For E2E testing, always:
 1. `just build-one <service>` locally
@@ -286,6 +288,88 @@ For E2E testing, always:
 3. Run curl commands against `localhost` through `kubectl exec -n centaur deploy/centaur-centaur-api -- curl ...`
 4. Verify results locally
 5. Only then commit, push, and let CI/CD handle production
+
+### Deploying to `samuel-a100`
+
+`samuel-a100` is a shared production host. It also runs a request-handler preview
+stack in Docker, so keep Centaur isolated in the existing k3s namespace and do not
+stop or repurpose non-Centaur containers. The Centaur checkout is:
+
+```bash
+ssh samuel-a100
+cd ~/projects/centaur
+```
+
+The host checkout may have `origin` pointed at upstream `paradigmxyz/centaur`; fetch
+Tavus explicitly before deploying Tavus fork commits:
+
+```bash
+git remote add tavus git@github.com:Tavus-Engineering/centaur.git 2>/dev/null || true
+git fetch tavus main
+git checkout -B tavus-main <tavus-commit-sha>
+```
+
+k3s and Helm need the k3s kubeconfig explicitly:
+
+```bash
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+```
+
+For a Slackbot-only deploy, build a unique immutable local image tag, import it into
+k3s containerd, then update the Helm release while preserving all existing values:
+
+```bash
+SHA=$(git rev-parse --short HEAD)
+docker build -t "centaur-slackbot-tavus:fork-${SHA}" -f services/slackbot/Dockerfile .
+docker save "centaur-slackbot-tavus:fork-${SHA}" | sudo k3s ctr images import -
+
+helm upgrade centaur contrib/chart -n centaur --reuse-values \
+  --set slackbot.image.repository=centaur-slackbot-tavus \
+  --set slackbot.image.tag="fork-${SHA}"
+
+kubectl -n centaur rollout status deploy/centaur-centaur-slackbot --timeout=180s
+kubectl -n centaur get deploy centaur-centaur-slackbot \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+```
+
+Smoke-test the Slackbot from inside the running pod, so the existing signing secret
+is used without printing it. For App Home changes, send a signed `app_home_opened`
+event and then verify `slack_app_home_published` appears in Slackbot logs:
+
+```bash
+EVENT_ID="Ev-home-smoke-${SHA}-$(date +%s)"
+kubectl -n centaur exec deploy/centaur-centaur-slackbot -- env EVENT_ID="$EVENT_ID" bun -e '
+import { createHmac } from "node:crypto";
+const payload = JSON.stringify({
+  type: "event_callback",
+  event_id: process.env.EVENT_ID,
+  team_id: "T8G3FLPSM",
+  event: {
+    type: "app_home_opened",
+    user: "U0AQJ5GNT4P",
+    channel: "DHOME",
+    tab: "home",
+    event_ts: `${Date.now() / 1000}`
+  }
+});
+const ts = Math.floor(Date.now() / 1000).toString();
+const sig = "v0=" + createHmac("sha256", process.env.SLACK_SIGNING_SECRET)
+  .update(`v0:${ts}:${payload}`)
+  .digest("hex");
+const response = await fetch("http://127.0.0.1:3001/api/webhooks/slack", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Slack-Request-Timestamp": ts,
+    "X-Slack-Signature": sig
+  },
+  body: payload
+});
+console.log(JSON.stringify({ event_id: process.env.EVENT_ID, status: response.status, body: await response.json() }));
+'
+
+kubectl -n centaur logs deploy/centaur-centaur-slackbot --since=5m | grep -A6 -B2 "$EVENT_ID"
+```
 
 ## Code Conventions
 
