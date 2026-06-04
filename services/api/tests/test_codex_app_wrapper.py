@@ -435,3 +435,45 @@ def test_main_lazy_starts_app_server_after_input(monkeypatch) -> None:
     )
     assert {"type": "thread.started", "thread_id": "thread-123"} in emitted
     assert {"type": "turn.completed"} in emitted
+
+
+def test_reasoning_effort_bumps_on_code_work(monkeypatch) -> None:
+    wrapper = _load_wrapper()
+    monkeypatch.delenv("CENTAUR_CODEX_DYNAMIC_EFFORT", raising=False)
+    monkeypatch.delenv("CENTAUR_CODEX_EFFORT", raising=False)
+    monkeypatch.delenv("CENTAUR_CODEX_EFFORT_HIGH", raising=False)
+
+    code_work = [
+        "investigate conversation cf47d2dadd0a1406, two recording webhooks",
+        "why is request-handler publishing duplicate events?",
+        "fix the bug in daily_service.py",
+        "what voice id is set on persona pb700592f1b6",
+        "look at the signoz logs for this error",
+        "open a PR for that",
+    ]
+    everyday = [
+        "hey, how are you?",
+        "summarize the #general channel for me",
+        "what is our refund policy in coda",
+        "thanks!",
+        "",
+    ]
+    for text in code_work:
+        assert wrapper._reasoning_effort_for_text(text) == "high", text
+    for text in everyday:
+        assert wrapper._reasoning_effort_for_text(text) is None, text
+
+
+def test_reasoning_effort_respects_env_controls(monkeypatch) -> None:
+    wrapper = _load_wrapper()
+    # hard override forces a value regardless of content
+    monkeypatch.setenv("CENTAUR_CODEX_EFFORT", "medium")
+    assert wrapper._reasoning_effort_for_text("hey there") == "medium"
+    monkeypatch.delenv("CENTAUR_CODEX_EFFORT", raising=False)
+    # disabled => never bump
+    monkeypatch.setenv("CENTAUR_CODEX_DYNAMIC_EFFORT", "0")
+    assert wrapper._reasoning_effort_for_text("fix the bug in app.py") is None
+    monkeypatch.setenv("CENTAUR_CODEX_DYNAMIC_EFFORT", "1")
+    # custom high value
+    monkeypatch.setenv("CENTAUR_CODEX_EFFORT_HIGH", "xhigh")
+    assert wrapper._reasoning_effort_for_text("fix the bug in app.py") == "xhigh"
