@@ -1,6 +1,6 @@
 [project]
 name = "pylon"
-description = "Pylon CLI for AI agents - support issues, accounts, contacts"
+description = "Pylon CLI for AI agents - support issues, messages, threads, accounts, contacts"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [

@@ -48,6 +48,20 @@ These are broadly useful across most deployments and are good candidates to conf
 | `attio` | CRM objects, records, lists, notes, tasks, calls, and meetings | `ATTIO_API_KEY` |
 | `pylon` | Support issues, accounts, contacts, teams, tags, and users | `PYLON_API_KEY` |
 
+### Pylon issue threads
+
+Centaur exposes Pylon through REST tool methods. In a sandbox, use `call discover
+pylon` and then call method names with JSON arguments:
+
+```bash
+call pylon get_issue_context '{"issue_id":"16412"}'
+```
+
+Use `get_issue_context` when a user references a support thread such as `Pylon
+Issue #16412`; it returns the issue details, messages, and internal threads.
+Avoid CLI-style calls like `call pylon issue 16412` — `issue` is a local Typer
+command, not a REST tool method.
+
 ## Communications
 
 | Tool | Use | API key / credential |

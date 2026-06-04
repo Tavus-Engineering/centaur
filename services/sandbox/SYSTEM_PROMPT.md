@@ -219,6 +219,7 @@
 |  call twitter search_tweets '{"query":"ethereum","max_results":20}'
 |  call linear search_issues '{"query":"bug in auth"}'
 |  call notion search '{"query":"meeting notes"}'
+|  call pylon get_issue_context '{"issue_id":"16412"}'  # issue + messages + internal threads
 |  call vlogs errors '{"service":"api"}'
 
 [Tool discovery — discover before you call]
