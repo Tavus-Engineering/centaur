@@ -103,6 +103,16 @@ class SlackClient:
             "token_revoked",
         }
     )
+    # Bot tokens can only read history/replies for channels the bot has joined;
+    # a non-member public channel returns one of these. When a user token is
+    # configured (SLACK_SEARCH_TOKEN) we retry the read with it so the agent
+    # can read public channels it hasn't been invited to.
+    _NOT_A_MEMBER_CODES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "not_in_channel",
+            "channel_not_found",
+        }
+    )
 
     def __init__(
         self,
@@ -369,6 +379,42 @@ class SlackClient:
 
         return items, next_cursor, bool(next_cursor)
 
+    def _has_user_token(self) -> bool:
+        """True when a distinct user (search) token is configured for reads."""
+        return bool(self.search_token) and self._search_client is not self._client
+
+    def _collect_pages_with_user_fallback(
+        self,
+        make_fetch_page: Callable[[WebClient], Callable[[str | None, int], dict[str, Any]]],
+        *,
+        result_key: str,
+        limit: int,
+        cursor: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None, bool]:
+        """Collect cursor pages on the bot token, falling back to the user token.
+
+        The bot token is tried first so member channels keep working unchanged.
+        On ``not_in_channel`` / ``channel_not_found`` — the signature of a public
+        channel the bot has not joined — the read is retried with the user token
+        (which reads as the installing user) when one is configured.
+        """
+        try:
+            return self._collect_cursor_pages(
+                make_fetch_page(self._client),
+                result_key=result_key,
+                limit=limit,
+                cursor=cursor,
+            )
+        except SlackApiError as error:
+            if self._has_user_token() and self._slack_error_code(error) in self._NOT_A_MEMBER_CODES:
+                return self._collect_cursor_pages(
+                    make_fetch_page(self._search_client),
+                    result_key=result_key,
+                    limit=limit,
+                    cursor=cursor,
+                )
+            raise
+
     def _resolve_channel(self, channel: str) -> str:
         """Resolve a channel name to its ID using cached channel list."""
         normalized = self._clean_channel_ref(channel)
@@ -379,7 +425,41 @@ class SlackClient:
         for ch in channels:
             if ch["name"] == name:
                 return ch["id"]
+        # The bot only lists channels it has joined. With a user token we can
+        # resolve a public channel the bot isn't in (reads escalate to it too).
+        resolved = self._resolve_channel_via_user_token(name)
+        if resolved:
+            return resolved
         raise RuntimeError(f"Channel '{channel}' not found or bot not a member")
+
+    def _resolve_channel_via_user_token(self, name: str) -> str | None:
+        """Resolve a public/private channel name to its ID using the user token.
+
+        ``conversations.list`` is an O(workspace) scan, so this only runs as a
+        fallback after the bot's own membership list misses, and only when a
+        user token is configured. Capped to avoid an unbounded scan.
+        """
+        if not self._has_user_token():
+            return None
+        cursor: str | None = None
+        for _ in range(20):  # cap: ~20 pages * 1000 = 20k channels
+            try:
+                response = self._retry_on_ratelimit(
+                    self._search_client.conversations_list,
+                    types="public_channel,private_channel",
+                    limit=1000,
+                    cursor=cursor,
+                    exclude_archived=True,
+                )
+            except SlackApiError:
+                return None
+            for ch in response.get("channels", []) or []:
+                if ch.get("name") == name:
+                    return ch["id"]
+            cursor = (response.get("response_metadata", {}) or {}).get("next_cursor") or None
+            if not cursor:
+                break
+        return None
 
     def _resolve_mentions(self, text: str, user_cache: dict[str, str]) -> str:
         """Replace <@USER_ID> mentions with @username using cached lookups only."""
@@ -880,28 +960,33 @@ class SlackClient:
 
         requested_limit = max(1, min(int(limit), self._MAX_PAGE_SIZE))
 
-        def fetch_page(next_cursor: str | None, batch_limit: int) -> dict[str, Any]:
-            kwargs: dict[str, Any] = {
-                "channel": channel_id,
-                "limit": batch_limit,
-            }
-            if next_cursor:
-                kwargs["cursor"] = next_cursor
-            if normalized_oldest is not None:
-                kwargs["oldest"] = normalized_oldest
-            if normalized_latest is not None:
-                kwargs["latest"] = normalized_latest
-            if normalized_oldest is not None or normalized_latest is not None:
-                kwargs["inclusive"] = inclusive
-            return self._retry_on_ratelimit(
-                self._client.conversations_history,
-                method_key="conversations.history",
-                **kwargs,
-            )
+        def make_fetch_page(
+            api_client: WebClient,
+        ) -> Callable[[str | None, int], dict[str, Any]]:
+            def fetch_page(next_cursor: str | None, batch_limit: int) -> dict[str, Any]:
+                kwargs: dict[str, Any] = {
+                    "channel": channel_id,
+                    "limit": batch_limit,
+                }
+                if next_cursor:
+                    kwargs["cursor"] = next_cursor
+                if normalized_oldest is not None:
+                    kwargs["oldest"] = normalized_oldest
+                if normalized_latest is not None:
+                    kwargs["latest"] = normalized_latest
+                if normalized_oldest is not None or normalized_latest is not None:
+                    kwargs["inclusive"] = inclusive
+                return self._retry_on_ratelimit(
+                    api_client.conversations_history,
+                    method_key="conversations.history",
+                    **kwargs,
+                )
+
+            return fetch_page
 
         try:
-            raw_messages, next_cursor, has_more = self._collect_cursor_pages(
-                fetch_page,
+            raw_messages, next_cursor, has_more = self._collect_pages_with_user_fallback(
+                make_fetch_page,
                 result_key="messages",
                 limit=requested_limit,
                 cursor=cursor,
@@ -973,28 +1058,33 @@ class SlackClient:
 
         requested_limit = max(1, min(int(limit), self._MAX_PAGE_SIZE))
 
-        def fetch_page(next_cursor: str | None, batch_limit: int) -> dict[str, Any]:
-            kwargs: dict[str, Any] = {
-                "channel": channel_id,
-                "ts": normalized_thread_ts,
-                "limit": batch_limit,
-                "inclusive": inclusive,
-            }
-            if next_cursor:
-                kwargs["cursor"] = next_cursor
-            if normalized_oldest is not None:
-                kwargs["oldest"] = normalized_oldest
-            if normalized_latest is not None:
-                kwargs["latest"] = normalized_latest
-            return self._retry_on_ratelimit(
-                self._client.conversations_replies,
-                method_key="conversations.replies",
-                **kwargs,
-            )
+        def make_fetch_page(
+            api_client: WebClient,
+        ) -> Callable[[str | None, int], dict[str, Any]]:
+            def fetch_page(next_cursor: str | None, batch_limit: int) -> dict[str, Any]:
+                kwargs: dict[str, Any] = {
+                    "channel": channel_id,
+                    "ts": normalized_thread_ts,
+                    "limit": batch_limit,
+                    "inclusive": inclusive,
+                }
+                if next_cursor:
+                    kwargs["cursor"] = next_cursor
+                if normalized_oldest is not None:
+                    kwargs["oldest"] = normalized_oldest
+                if normalized_latest is not None:
+                    kwargs["latest"] = normalized_latest
+                return self._retry_on_ratelimit(
+                    api_client.conversations_replies,
+                    method_key="conversations.replies",
+                    **kwargs,
+                )
+
+            return fetch_page
 
         try:
-            raw_messages, next_cursor, has_more = self._collect_cursor_pages(
-                fetch_page,
+            raw_messages, next_cursor, has_more = self._collect_pages_with_user_fallback(
+                make_fetch_page,
                 result_key="messages",
                 limit=requested_limit,
                 cursor=cursor,
