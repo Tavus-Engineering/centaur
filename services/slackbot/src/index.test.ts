@@ -11,11 +11,79 @@ afterEach(() => {
 })
 
 describe('Slack event HTTP dedupe', () => {
+  it('publishes the Watch Agent Home tab when App Home is opened', async () => {
+    process.env.SLACK_SIGNING_SECRET = 'test-signing-secret'
+    process.env.SLACK_BOT_TOKEN = 'xoxb-home-test'
+    delete process.env.SLACKBOT_API_KEY
+    delete process.env.CENTAUR_API_KEY
+
+    const slackCalls: Array<{ path: string; body: Record<string, unknown> }> = []
+    const slackApi = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url)
+        const body = await slackApiBody(request)
+        slackCalls.push({ path: url.pathname, body })
+        if (url.pathname === '/api/auth.test') {
+          return Response.json({ ok: true, user_id: 'UBOT', bot_id: 'BBOT' })
+        }
+        if (url.pathname === '/api/views.publish') {
+          return Response.json({ ok: true, view: { id: 'VHOME' } })
+        }
+        return Response.json({ ok: false, error: 'unexpected_slack_method' }, { status: 404 })
+      }
+    })
+    process.env.SLACK_API_URL = `http://127.0.0.1:${slackApi.port}/api/`
+
+    try {
+      const { app } = await import(`./index.ts?app_home=${Date.now()}`)
+      const body = JSON.stringify({
+        type: 'event_callback',
+        event_id: 'Ev-home-opened',
+        team_id: 'T123',
+        event: {
+          type: 'app_home_opened',
+          user: 'UHOME',
+          channel: 'DHOME',
+          tab: 'home',
+          event_ts: '1778883099.579531'
+        }
+      })
+      const waits: Promise<unknown>[] = []
+      const response = await app.request(
+        '/api/webhooks/slack',
+        signedJsonRequest(body, process.env.SLACK_SIGNING_SECRET),
+        {},
+        {
+          waitUntil: (promise: Promise<unknown>) => {
+            waits.push(promise)
+          }
+        } as any
+      )
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ ok: true })
+      await Promise.allSettled(waits)
+
+      const publish = slackCalls.find(call => call.path === '/api/views.publish')
+      expect(publish?.body.user_id).toBe('UHOME')
+      const view = publish?.body.view as Record<string, unknown> | undefined
+      expect(view?.type).toBe('home')
+      expect(JSON.stringify(view?.blocks)).toContain('Watch Agent')
+      expect(JSON.stringify(view?.blocks)).toContain('tavus-context')
+    } finally {
+      await slackApi.stop()
+    }
+  })
+
   it('creates Linear issues from configured feedback slash commands', async () => {
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret'
     process.env.LINEAR_API_KEY = 'lin-test-key'
     process.env.SLACK_FEEDBACK_LINEAR_TEAM_ID = 'team-feedback'
     process.env.SLACK_FEEDBACK_LINEAR_PROJECT_ID = 'project-feedback'
+    delete process.env.SLACK_BOT_TOKEN
+    delete process.env.SLACKBOT_API_KEY
+    delete process.env.CENTAUR_API_KEY
 
     const originalFetch = globalThis.fetch
     const fetchMock = mock(async (_input: string | URL | Request, init?: RequestInit) => {
@@ -248,5 +316,29 @@ function signedJsonRequest(body: string, signingSecret: string): RequestInit {
       'x-slack-signature': signature
     },
     body
+  }
+}
+
+async function slackApiBody(request: Request): Promise<Record<string, unknown>> {
+  const contentType = request.headers.get('content-type') ?? ''
+  const text = await request.text()
+  if (contentType.includes('application/json')) {
+    return JSON.parse(text || '{}') as Record<string, unknown>
+  }
+  return Object.fromEntries(
+    Array.from(new URLSearchParams(text).entries()).map(([key, value]) => [
+      key,
+      parseMaybeJson(value)
+    ])
+  )
+}
+
+function parseMaybeJson(value: string): unknown {
+  const trimmed = value.trim()
+  if (!trimmed || !['{', '['].includes(trimmed[0] ?? '')) return value
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return value
   }
 }

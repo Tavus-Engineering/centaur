@@ -81,4 +81,6 @@ jobs:
           bun test \
             src/centaur/handoff.test.ts \
             src/slack/normalize.test.ts \
+            src/slack/home.test.ts \
+            src/index.test.ts \
             src/centaur/final-delivery.test.ts

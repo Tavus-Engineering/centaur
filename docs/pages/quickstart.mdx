@@ -160,11 +160,13 @@ https://<your-host>/api/webhooks/slack
 In your Slack app's **Event Subscriptions** settings, set the Request URL to the
 Slackbot webhook URL above.
 
-Subscribe to the `app_mention` bot event. For a minimal channel-mention test,
-the app also needs Bot Token Scopes that let it read mentions and write replies,
-for example `app_mentions:read` and `chat:write`. If you enable DM events such
-as `message.im`, Slack will also require direct-message scopes such as
-`im:history`.
+Subscribe to the `app_mention` bot event. If you enable the App Home tab, also
+turn on **Features > App Home > Home Tab** and subscribe to the `app_home_opened`
+bot event so the Slackbot can publish the Watch Agent Home view. For a minimal
+channel-mention test, the app also needs Bot Token Scopes that let it read
+mentions and write replies, for example `app_mentions:read` and `chat:write`. If
+you enable DM events such as `message.im`, Slack will also require
+direct-message scopes such as `im:history`.
 
 Message events also unlock mention-free replies: with `message.im` enabled the
 bot answers DMs directly, and with `message.channels` (plus `channels:history`)

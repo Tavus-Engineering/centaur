@@ -21,6 +21,7 @@ import { authorizeSlackOrg } from './slack/authorization'
 import { CodexSessionRenderer, hasActiveCodexSession } from './slack/codex-session'
 import { EventDeduper, slackDedupKey } from './slack/dedup'
 import { duplicateSlackAlertText, type DuplicateSlackEventDetails } from './slack/duplicate-alert'
+import { publishWatchAgentHome } from './slack/home'
 import { EnvSlackInstallationStore, SlackClientResolver } from './slack/installations'
 import { normalizeSlackEnvelope } from './slack/normalize'
 import { markdownToStreamChunks } from './slack/render'
@@ -57,6 +58,8 @@ void resolver
 type Variables = {
   slackRawBody: string
 }
+
+type SlackbotSpanAttributes = Parameters<typeof spanAttributes>[1]
 
 type WaitUntilContext = {
   waitUntil(promise: Promise<unknown>): void
@@ -559,6 +562,11 @@ async function processSlackEvent(envelope: SlackEnvelope): Promise<void> {
         return
       }
 
+      if (rawEvent.type === 'app_home_opened') {
+        await handleAppHomeOpened(envelope, rawEvent, attrs => spanAttributes(span, attrs))
+        return
+      }
+
       const { client, installation } = await resolver.resolve({
         teamId: envelope.team_id,
         enterpriseId: envelope.enterprise_id
@@ -619,6 +627,49 @@ async function processSlackEvent(envelope: SlackEnvelope): Promise<void> {
       }
     }
   )
+}
+
+async function handleAppHomeOpened(
+  envelope: SlackEnvelope,
+  event: Record<string, unknown>,
+  setSpanAttributes: (attrs: SlackbotSpanAttributes) => void
+): Promise<void> {
+  const userId = typeof event.user === 'string' ? event.user : ''
+  const tab = typeof event.tab === 'string' ? event.tab : undefined
+  if (tab && tab !== 'home') {
+    setSpanAttributes({
+      'centaur.slackbot.event_ignored': true,
+      'centaur.slackbot.ignore_reason': 'non_home_app_tab',
+      'slack.app_home_tab': tab
+    })
+    return
+  }
+  if (!userId) {
+    setSpanAttributes({
+      'centaur.slackbot.event_ignored': true,
+      'centaur.slackbot.ignore_reason': 'missing_app_home_user'
+    })
+    logWarn('slack_app_home_opened_missing_user', {
+      team_id: envelope.team_id,
+      event_id: envelope.event_id
+    })
+    return
+  }
+
+  const { client } = await resolver.resolve({
+    teamId: envelope.team_id,
+    enterpriseId: envelope.enterprise_id
+  })
+  await publishWatchAgentHome(client, userId)
+  setSpanAttributes({
+    'centaur.slackbot.event_action': 'publish_app_home',
+    'slack.user_id': userId
+  })
+  logInfo('slack_app_home_published', {
+    team_id: envelope.team_id,
+    event_id: envelope.event_id,
+    user_id: userId
+  })
 }
 
 const TRIVIAL_ACK_REACTION = 'ok_hand'
