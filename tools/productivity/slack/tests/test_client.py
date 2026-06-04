@@ -121,6 +121,7 @@ def _make_client() -> tuple[SlackClient, _FakeWebClient]:
     fake_web_client = _FakeWebClient()
     client._client = fake_web_client
     client._search_client = fake_web_client
+    client.search_token = ""
     client._user_cache = {}
     client._ratelimit_deadlines = {}
     client._resolve_channel = lambda channel: "C123"  # type: ignore[method-assign]
@@ -985,3 +986,77 @@ def test_list_users_paginates_and_skips_deleted_by_default() -> None:
         {"limit": 10},
         {"limit": 9, "cursor": "cursor-2"},
     ]
+
+
+def _make_client_with_user_token() -> tuple[SlackClient, _FakeWebClient, _FakeWebClient]:
+    """Client with distinct bot and user (search) token clients."""
+    client = SlackClient.__new__(SlackClient)
+    bot = _FakeWebClient()
+    user = _FakeWebClient()
+    client._client = bot
+    client._search_client = user
+    client.search_token = "xoxp-test"
+    client._user_cache = {}
+    client._ratelimit_deadlines = {}
+    client._resolve_channel = lambda channel: "C999"  # type: ignore[method-assign]
+    client._get_user_cache = lambda: {}  # type: ignore[method-assign]
+    return client, bot, user
+
+
+def test_thread_replies_fall_back_to_user_token_when_bot_not_in_channel() -> None:
+    client, bot, user = _make_client_with_user_token()
+
+    def bot_not_in_channel(**_kwargs):
+        raise _make_slack_error(error="not_in_channel", status_code=403)
+
+    bot.conversations_replies = bot_not_in_channel  # type: ignore[method-assign]
+    user.reply_pages = [
+        {
+            "messages": [{"user": "U1", "text": "from a channel the bot is not in", "ts": "1.0"}],
+            "response_metadata": {"next_cursor": ""},
+        }
+    ]
+
+    result = client.get_thread_replies_page("C999", "1.0")
+
+    assert result["count"] == 1
+    assert result["messages"][0]["text"] == "from a channel the bot is not in"
+    assert len(user.reply_calls) == 1
+
+
+def test_channel_history_falls_back_to_user_token_when_bot_not_in_channel() -> None:
+    client, bot, user = _make_client_with_user_token()
+
+    def bot_not_in_channel(**_kwargs):
+        raise _make_slack_error(error="not_in_channel", status_code=403)
+
+    bot.conversations_history = bot_not_in_channel  # type: ignore[method-assign]
+    user.history_pages = [
+        {
+            "messages": [{"user": "U1", "text": "public channel message", "ts": "2.0"}],
+            "response_metadata": {"next_cursor": ""},
+        }
+    ]
+
+    result = client.get_channel_history_page("C999", limit=5)
+
+    assert result["count"] == 1
+    assert result["messages"][0]["text"] == "public channel message"
+    assert len(user.history_calls) == 1
+
+
+def test_no_user_token_means_not_in_channel_still_raises() -> None:
+    # When bot and search clients are the same (no user token), the error
+    # surfaces as a structured auth failure rather than silently retrying.
+    client, fake_web_client = _make_client()
+    client.search_token = ""
+    client._get_user_cache = lambda: {}  # type: ignore[method-assign]
+
+    def fail(**_kwargs):
+        raise _make_slack_error(error="not_in_channel", status_code=403)
+
+    fake_web_client.conversations_replies = fail  # type: ignore[method-assign]
+
+    # Without a user token the read is not retried; the failure surfaces.
+    with pytest.raises((SlackApiError, SlackAuthError)):
+        client.get_thread_replies_page("C999", "1.0")

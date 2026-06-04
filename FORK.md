@@ -13,3 +13,4 @@ line in the PR that syncs it back.
 | 555ec005 | slackbot: reply to DMs and joined threads without a mention | [#2](https://github.com/Tavus-Engineering/centaur/pull/2) |
 | 06128dc9 | api: select harness from bare claude/codex words in Slack turns (selectors, not wake words) | [#4](https://github.com/Tavus-Engineering/centaur/pull/4) |
 | 24025565 | add FORK.md divergence tracking + AGENTS.md/CLAUDE.md policy | [#5](https://github.com/Tavus-Engineering/centaur/pull/5) |
+| 24f6cebb | slack: read non-member public channels/threads via SLACK_SEARCH_TOKEN user-token fallback | [#6](https://github.com/Tavus-Engineering/centaur/pull/6) |
