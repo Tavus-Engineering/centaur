@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -43,6 +44,51 @@ CONFIGURED_OTEL_TRACE_ID: str | None = None
 CONFIGURED_TRACE_CONTEXT_ID: str | None = None
 APP_INITIALIZED = False
 CURRENT_TRACEPARENT: str | None = None
+
+# Dynamic reasoning effort: keep the config.toml default (cheap) for everyday
+# chat, but launch codex at a higher effort when the first turn of a session
+# looks like code / debugging / investigation work. Effort is fixed at
+# app-server launch, so this is decided once from the first message and holds
+# for the thread. Controls (env):
+#   CENTAUR_CODEX_DYNAMIC_EFFORT  on by default; set 0/false/off to disable
+#   CENTAUR_CODEX_EFFORT_HIGH     effort to use when code work is detected (default "high")
+#   CENTAUR_CODEX_EFFORT          hard override: force this effort, skip the heuristic
+_CODE_WORK_RE = re.compile(
+    r"""(
+        \bc[0-9a-f]{15}\b                                   # conversation_id
+      | \b[pr][0-9a-f]{11}\b                                # persona_id / replica_id
+      | \b(investigate|debug|root[\s-]*cause|traceback|stack[\s-]*trace
+            |stacktrace|regression|repro)\w*
+      | \b(why|what|how)\b.{0,40}\b(fail|failing|failed|broke|broken|breaking
+            |error|erroring|crash|crashing|hang|hanging|slow|timeout|timing)\w*
+      | \b(fix|patch|bug|pull[\s-]*request|diff|stack\s*trace)\b
+      | \bPR\b
+      | \b(request-handler|realtime-replica|developer-portal|tavus-api
+            |tavus-operator|billing-service|avatar-service|tavus-lambdas
+            |llm-helpers|phoenix-2-pro|sparrow-one|template-video|centaur)\b
+      | \b(signoz|cloudwatch|webhook|stack\s*trace|exception)\b
+      | \.(py|ts|tsx|js|jsx|go|rs|sql|sh)\b                 # source file extensions
+      | \bcode\b
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _reasoning_effort_for_text(text: str) -> str | None:
+    """Pick a reasoning-effort override for a session from its first message.
+
+    Returns the effort string to pass to ``codex -c model_reasoning_effort=…``,
+    or ``None`` to leave the config.toml default in place.
+    """
+    if (os.environ.get("CENTAUR_CODEX_DYNAMIC_EFFORT", "1").strip().lower()
+            in ("0", "false", "no", "off")):
+        return None
+    forced = (os.environ.get("CENTAUR_CODEX_EFFORT") or "").strip()
+    if forced:
+        return forced
+    if text and _CODE_WORK_RE.search(text):
+        return (os.environ.get("CENTAUR_CODEX_EFFORT_HIGH") or "high").strip()
+    return None
 OTEL_PROXY: ThreadingHTTPServer | None = None
 OTEL_PROXY_TARGET_ENDPOINT: str | None = None
 OTEL_PROXY_SPAN_PREFIX = "codex."
@@ -103,7 +149,7 @@ def notify(method: str, params: dict[str, Any] | None = None) -> None:
     send_raw({"method": method, "params": params or {}})
 
 
-def start_app_server() -> None:
+def start_app_server(reasoning_effort: str | None = None) -> None:
     global APP, APP_INITIALIZED
     if APP is not None and APP.poll() is None and APP_INITIALIZED:
         return
@@ -111,13 +157,19 @@ def start_app_server() -> None:
         APP = None
         APP_INITIALIZED = False
 
+    cmd = ["codex", "app-server"]
+    if reasoning_effort:
+        cmd += ["-c", f"model_reasoning_effort={reasoning_effort}"]
+        emit(
+            {
+                "type": "system",
+                "subtype": "codex_reasoning_effort",
+                "effort": reasoning_effort,
+            }
+        )
+    cmd += ["--listen", "stdio://"]
     APP = subprocess.Popen(
-        [
-            "codex",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ],
+        cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=sys.stderr,
@@ -808,9 +860,14 @@ def handle_input(turn_input: dict[str, Any]) -> None:
         turn_input.get("thread_key"),
     )
     CURRENT_TRACE_METADATA = trace_metadata_from_input(turn_input)
-    start_app_server()
-    thread_id = start_or_resume_thread()
     items = input_items(turn_input)
+    # Decide reasoning effort from this turn's text. Only the first turn of a
+    # session actually launches the app-server, so this fixes effort per thread.
+    first_text = "\n".join(
+        str(item.get("text") or "") for item in items if item.get("type") == "text"
+    )
+    start_app_server(_reasoning_effort_for_text(first_text))
+    thread_id = start_or_resume_thread()
     CURRENT_LLM_INPUT_TEXT = "\n".join(
         str(item.get("text") or "") for item in items if item.get("type") == "text"
     ).strip()
