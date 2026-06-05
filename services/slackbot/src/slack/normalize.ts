@@ -97,6 +97,7 @@ export async function normalizeSlackEnvelope(opts: {
     event.type === 'app_mention' ||
     Boolean(opts.botUserId && messageMentionsBot(event, opts.botUserId))
   const isDm = event.channel_type === 'im'
+  if (isDm && !(await canAccessConversation(opts.client, event.channel))) return null
   const threadTs = event.thread_ts ?? event.ts
   const threadKeyTs = isDm && !event.thread_ts ? event.channel : threadTs
   const isThreadReply = Boolean(event.thread_ts) && event.thread_ts !== event.ts
@@ -138,6 +139,31 @@ export async function normalizeSlackEnvelope(opts: {
       app_id: event.app_id ?? event.bot_profile?.app_id,
       bot_user_id: event.bot_profile?.user_id
     }
+  }
+}
+
+async function canAccessConversation(client: WebClient, channel: string): Promise<boolean> {
+  const conversations = client.conversations as unknown as {
+    info?: (args: { channel: string }) => Promise<{ ok?: boolean; error?: string }>
+  }
+  if (typeof conversations.info !== 'function') return true
+
+  try {
+    const response = await conversations.info({ channel })
+    if (response?.ok === false) {
+      logWarn('slack_conversation_access_denied', {
+        channel,
+        error: response.error ?? 'unknown_error'
+      })
+      return false
+    }
+    return true
+  } catch (error) {
+    logWarn('slack_conversation_access_check_failed', {
+      channel,
+      error: error instanceof Error ? error.message : String(error)
+    })
+    return false
   }
 }
 
