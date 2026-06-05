@@ -414,16 +414,27 @@ def _deployment_environment() -> str:
 def _slack_thread_metadata(thread_key: str) -> dict[str, str]:
     # Slack thread keys are slack:<team>:<channel>:<thread_ts>; the older
     # slack:<channel>:<thread_ts> form is still accepted for compatibility.
+    # Unthreaded DMs use slack:<team>:<D-channel>:<D-channel> so they can reuse
+    # one runtime without pretending the channel id is a Slack timestamp.
     parts = thread_key.split(":")
     if parts[0] != "slack":
         return {}
     if len(parts) == 4:
+        if parts[2].startswith("D") and parts[3] == parts[2]:
+            return {
+                "slack_team_id": parts[1],
+                "slack_channel_id": parts[2],
+            }
         return {
             "slack_team_id": parts[1],
             "slack_channel_id": parts[2],
             "slack_thread_ts": parts[3],
         }
     if len(parts) == 3:
+        if parts[1].startswith("D") and parts[2] == parts[1]:
+            return {
+                "slack_channel_id": parts[1],
+            }
         return {
             "slack_channel_id": parts[1],
             "slack_thread_ts": parts[2],
@@ -477,6 +488,11 @@ def _execution_laminar_metadata(
     )
     if channel and not metadata.get("slack_channel_id"):
         metadata["slack_channel_id"] = channel
+    thread_ts = (
+        delivery.get("thread_ts") if isinstance(delivery.get("thread_ts"), str) else None
+    )
+    if thread_ts:
+        metadata["slack_thread_ts"] = thread_ts
     return metadata
 
 

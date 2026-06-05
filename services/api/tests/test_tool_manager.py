@@ -17,6 +17,7 @@ from api.tool_manager import (  # noqa: E402
     _describe_method_docstring,
     _friendly_type_name,
     _normalize_for_serialization,
+    _slack_destination_from_thread_key,
     _tool_arg_validation_error,
     _to_toon,
     ToolManager,
@@ -73,6 +74,20 @@ class TestDescribeMethodDocstring:
         out = _describe_method_docstring(doc)
         assert len(out) <= 1200
         assert out.endswith("\u2026")
+
+
+class TestSlackThreadKeyParsing:
+    def test_team_scoped_thread_key_has_channel_and_thread(self):
+        assert _slack_destination_from_thread_key(
+            "slack:T123:C123:1778883099.579529"
+        ) == ("C123", "1778883099.579529", False)
+
+    def test_stable_dm_thread_key_is_channel_scoped(self):
+        assert _slack_destination_from_thread_key("slack:T123:D123:D123") == (
+            "D123",
+            None,
+            True,
+        )
 
 
 # ---------------------------------------------------------------------------

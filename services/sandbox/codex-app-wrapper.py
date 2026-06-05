@@ -51,7 +51,7 @@ CURRENT_TRACEPARENT: str | None = None
 # app-server launch, so this is decided once from the first message and holds
 # for the thread. Controls (env):
 #   CENTAUR_CODEX_DYNAMIC_EFFORT  on by default; set 0/false/off to disable
-#   CENTAUR_CODEX_EFFORT_HIGH     effort to use when code work is detected (default "high")
+#   CENTAUR_CODEX_EFFORT_HIGH     effort to use when code work is detected (default "medium")
 #   CENTAUR_CODEX_EFFORT          hard override: force this effort, skip the heuristic
 _CODE_WORK_RE = re.compile(
     r"""(
@@ -87,7 +87,7 @@ def _reasoning_effort_for_text(text: str) -> str | None:
     if forced:
         return forced
     if text and _CODE_WORK_RE.search(text):
-        return (os.environ.get("CENTAUR_CODEX_EFFORT_HIGH") or "high").strip()
+        return (os.environ.get("CENTAUR_CODEX_EFFORT_HIGH") or "medium").strip()
     return None
 OTEL_PROXY: ThreadingHTTPServer | None = None
 OTEL_PROXY_TARGET_ENDPOINT: str | None = None

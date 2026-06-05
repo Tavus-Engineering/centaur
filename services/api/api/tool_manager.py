@@ -1169,17 +1169,18 @@ async def _capture_live_slack_send(
         return None
 
     thread_key = str(sandbox_claims.get("thread_key") or "")
-    parts = thread_key.split(":")
-    if len(parts) < 4 or parts[0] != "slack":
+    destination = _slack_destination_from_thread_key(thread_key)
+    if destination is None:
         return None
-    active_channel = parts[2]
-    active_thread_ts = parts[3]
+    active_channel, active_thread_ts, is_stable_dm = destination
     requested_channel = str(args.get("channel") or args.get("channel_id") or "").lstrip("#")
     requested_thread_ts = str(args.get("thread_ts") or "")
     channel_is_id = bool(re.match(r"^[CDG][A-Z0-9]+$", requested_channel))
     if channel_is_id and requested_channel != active_channel:
         return None
-    if requested_thread_ts and requested_thread_ts != active_thread_ts:
+    if requested_thread_ts and active_thread_ts and requested_thread_ts != active_thread_ts:
+        return None
+    if requested_thread_ts and active_thread_ts is None and not is_stable_dm:
         return None
 
     text = str(args.get("text") or args.get("message") or "").strip()
@@ -1217,8 +1218,20 @@ async def _capture_live_slack_send(
         "captured": True,
         "message": "Captured into the active Slackbot live reply; no separate Slack message was posted.",
         "channel": active_channel,
-        "thread_ts": active_thread_ts,
+        "thread_ts": requested_thread_ts or active_thread_ts or "",
     }
+
+
+def _slack_destination_from_thread_key(thread_key: str) -> tuple[str, str | None, bool] | None:
+    parts = thread_key.split(":")
+    if len(parts) < 4 or parts[0] != "slack":
+        return None
+    channel = parts[2]
+    thread_ts = ":".join(parts[3:])
+    if not channel or not thread_ts:
+        return None
+    is_stable_dm = channel.startswith("D") and thread_ts == channel
+    return channel, None if is_stable_dm else thread_ts, is_stable_dm
 
 
 async def _extract_tool_attachment(

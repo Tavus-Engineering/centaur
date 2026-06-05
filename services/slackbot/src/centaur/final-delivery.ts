@@ -383,10 +383,16 @@ function targetFromDelivery(delivery: any): {
   const threadKey = String(delivery.thread_key ?? "");
   const parts = threadKey.split(":");
   if (parts[0] === "slack" && parts.length >= 4) {
+    const teamId = parts[1];
+    const channel = parts[2];
+    const threadTs = parts.slice(3).join(":");
+    if (!teamId || !channel) return {};
     return {
-      teamId: parts[1],
-      channel: parts[2],
-      threadTs: parts.slice(3).join(":"),
+      teamId,
+      channel,
+      ...(channel.startsWith("D") && threadTs === channel
+        ? {}
+        : { threadTs }),
     };
   }
   return {};

@@ -790,7 +790,7 @@ async def refresh_runtime_metrics(pool: Pool) -> None:
         "SELECT COUNT(*) FROM agent_runtime_assignments "
         "WHERE state = 'active' "
         "  AND updated_at < NOW() - make_interval(secs => $1::double precision)",
-        float(os.getenv("IDLE_TTL_S", "86400")),
+        float(os.getenv("IDLE_TTL_S", "900")),
     )
     RUNTIME_ASSIGNMENTS_STALE_ACTIVE.set(int(stale_active or 0))
 
