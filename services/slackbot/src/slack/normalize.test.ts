@@ -583,6 +583,7 @@ describe('normalizeSlackEnvelope', () => {
   })
 
   it('treats a DM without a mention as addressed', async () => {
+    const info = mock(async () => ({ ok: true }))
     const normalized = await normalizeSlackEnvelope({
       envelope: {
         type: 'event_callback',
@@ -598,13 +599,44 @@ describe('normalizeSlackEnvelope', () => {
         }
       },
       botUserId: 'UBOT',
-      client
+      client: {
+        token: 'xoxb-test-token',
+        conversations: { replies: mock(async () => ({ ok: true, messages: [] })), info }
+      } as any
     })
 
+    expect(info).toHaveBeenCalledWith({ channel: 'D123' })
     expect(normalized?.is_mention).toBe(false)
     expect(normalized?.is_addressed).toBe(true)
     expect(normalized?.thread_key).toBe('slack:T123:D123:D123')
     expect(normalized?.thread_ts).toBe('1778875070.942789')
+  })
+
+  it('ignores DM events when the bot cannot access the channel', async () => {
+    const info = mock(async () => ({ ok: false, error: 'channel_not_found' }))
+    const normalized = await normalizeSlackEnvelope({
+      envelope: {
+        type: 'event_callback',
+        team_id: 'T123',
+        event_id: 'Ev-dm-channel-not-found',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'D123',
+          channel_type: 'im',
+          ts: '1778875070.942789',
+          text: 'this should not spawn an agent'
+        }
+      },
+      botUserId: 'UBOT',
+      client: {
+        token: 'xoxb-test-token',
+        conversations: { replies: mock(async () => ({ ok: true, messages: [] })), info }
+      } as any
+    })
+
+    expect(info).toHaveBeenCalledWith({ channel: 'D123' })
+    expect(normalized).toBeNull()
   })
 
   it('reuses one thread key for unthreaded messages in the same DM', async () => {
