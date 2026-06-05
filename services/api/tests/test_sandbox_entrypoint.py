@@ -17,7 +17,7 @@ def _write_codex_harness_config(home: Path) -> Path:
         "\n".join(
             [
                 'model = "gpt-5.5"',
-                'model_reasoning_effort = "low"',
+                'model_reasoning_effort = "medium"',
                 'plan_mode_reasoning_effort = "high"',
                 'approval_policy = "on-request"',
                 'approvals_reviewer = "user"',
@@ -26,7 +26,7 @@ def _write_codex_harness_config(home: Path) -> Path:
                 'sandbox_mode = "workspace-write"',
                 "check_for_update_on_startup = true",
                 "suppress_unstable_features_warning = true",
-                'service_tier = "fast"',
+                'service_tier = "default"',
                 "",
                 "[tools]",
                 "view_image = true",
@@ -43,11 +43,11 @@ def _write_codex_harness_config(home: Path) -> Path:
                 "",
                 "[features.multi_agent_v2]",
                 "enabled = true",
-                "max_concurrent_threads_per_session = 6",
+                "max_concurrent_threads_per_session = 2",
                 "",
                 "[agents]",
-                "max_depth = 2",
-                "job_max_runtime_seconds = 1800",
+                "max_depth = 1",
+                "job_max_runtime_seconds = 900",
                 "",
             ]
         )
@@ -103,12 +103,12 @@ def test_sandbox_entrypoint_bootstraps_mock_google_adc(tmp_path: Path) -> None:
 
     codex_config = (home / ".codex" / "config.toml").read_text()
     assert 'model = "gpt-5.5"' in codex_config
-    assert 'model_reasoning_effort = "low"' in codex_config
+    assert 'model_reasoning_effort = "medium"' in codex_config
     assert 'plan_mode_reasoning_effort = "high"' in codex_config
     assert 'approval_policy = "on-request"' in codex_config
     assert 'sandbox_mode = "workspace-write"' in codex_config
-    assert 'service_tier = "fast"' in codex_config
-    assert "max_concurrent_threads_per_session = 6" in codex_config
+    assert 'service_tier = "default"' in codex_config
+    assert "max_concurrent_threads_per_session = 2" in codex_config
 
 
 def test_sandbox_entrypoint_installs_codex_harness_config(tmp_path: Path) -> None:

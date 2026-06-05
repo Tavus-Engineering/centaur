@@ -85,7 +85,6 @@ export async function normalizeSlackEnvelope(opts: {
   const teamId = opts.envelope.team_id ?? event.team
   if (!teamId) return null
 
-  const threadTs = event.thread_ts ?? event.ts
   const textPart = slackMessageText(event, opts.botUserId)
   const parts: NormalizedPart[] = []
   if (textPart) parts.push({ type: 'text', text: textPart })
@@ -98,6 +97,8 @@ export async function normalizeSlackEnvelope(opts: {
     event.type === 'app_mention' ||
     Boolean(opts.botUserId && messageMentionsBot(event, opts.botUserId))
   const isDm = event.channel_type === 'im'
+  const threadTs = event.thread_ts ?? event.ts
+  const threadKeyTs = isDm && !event.thread_ts ? event.channel : threadTs
   const isThreadReply = Boolean(event.thread_ts) && event.thread_ts !== event.ts
   const historyMessages =
     isMention || isDm || isThreadReply
@@ -115,7 +116,7 @@ export async function normalizeSlackEnvelope(opts: {
   const isAddressed = isMention || isDm || (isThreadReply && botInThread)
 
   return {
-    thread_key: `slack:${teamId}:${event.channel}:${threadTs}`,
+    thread_key: `slack:${teamId}:${event.channel}:${threadKeyTs}`,
     message_id: `slack:${teamId}:${event.channel}:${event.ts}`,
     team_id: teamId,
     recipient_team_id: recipientSlackTeamId(event) ?? teamId,

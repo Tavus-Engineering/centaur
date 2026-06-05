@@ -23,5 +23,12 @@ def test_legacy_thread_key_without_team() -> None:
     }
 
 
+def test_stable_dm_thread_key_is_channel_scoped() -> None:
+    assert _slack_thread_metadata("slack:T0AQQ46PL4C:D0B0XS7BLA3:D0B0XS7BLA3") == {
+        "slack_team_id": "T0AQQ46PL4C",
+        "slack_channel_id": "D0B0XS7BLA3",
+    }
+
+
 def test_non_slack_thread_key() -> None:
     assert _slack_thread_metadata("task:do-something-123") == {}

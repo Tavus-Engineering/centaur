@@ -603,6 +603,73 @@ describe('normalizeSlackEnvelope', () => {
 
     expect(normalized?.is_mention).toBe(false)
     expect(normalized?.is_addressed).toBe(true)
+    expect(normalized?.thread_key).toBe('slack:T123:D123:D123')
+    expect(normalized?.thread_ts).toBe('1778875070.942789')
+  })
+
+  it('reuses one thread key for unthreaded messages in the same DM', async () => {
+    const first = await normalizeSlackEnvelope({
+      envelope: {
+        type: 'event_callback',
+        team_id: 'T123',
+        event_id: 'Ev-dm-one',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'D123',
+          channel_type: 'im',
+          ts: '1778875070.000001',
+          text: 'first'
+        }
+      },
+      botUserId: 'UBOT',
+      client
+    })
+    const second = await normalizeSlackEnvelope({
+      envelope: {
+        type: 'event_callback',
+        team_id: 'T123',
+        event_id: 'Ev-dm-two',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'D123',
+          channel_type: 'im',
+          ts: '1778875075.000002',
+          text: 'second'
+        }
+      },
+      botUserId: 'UBOT',
+      client
+    })
+
+    expect(first?.thread_key).toBe('slack:T123:D123:D123')
+    expect(second?.thread_key).toBe(first?.thread_key)
+    expect(second?.thread_ts).toBe('1778875075.000002')
+  })
+
+  it('keeps real Slack thread timestamps for threaded DM replies', async () => {
+    const normalized = await normalizeSlackEnvelope({
+      envelope: {
+        type: 'event_callback',
+        team_id: 'T123',
+        event_id: 'Ev-dm-thread',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'D123',
+          channel_type: 'im',
+          thread_ts: '1778875000.000001',
+          ts: '1778875075.000002',
+          text: 'thread reply'
+        }
+      },
+      botUserId: 'UBOT',
+      client
+    })
+
+    expect(normalized?.thread_key).toBe('slack:T123:D123:1778875000.000001')
+    expect(normalized?.thread_ts).toBe('1778875000.000001')
   })
 
   it('treats a thread reply as addressed when the bot already replied in the thread', async () => {

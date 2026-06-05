@@ -1514,9 +1514,11 @@ class SlackClient:
     def _current_slack_destination(self) -> tuple[str | None, str | None]:
         """Return the active Slack channel/thread from the tool context, if any.
 
-        Slack thread keys are ``slack:<team>:<channel>:<thread_ts>`` (the format
-        the slackbot emits). The older ``slack:<channel>:<thread_ts>`` form is
-        still accepted for backwards compatibility.
+        Slack thread keys are ``slack:<team>:<channel>:<thread_ts>``. Unthreaded
+        DMs use ``slack:<team>:<D-channel>:<D-channel>`` to reuse one runtime; in
+        that case only the channel can be inferred from the key. The older
+        ``slack:<channel>:<thread_ts>`` form is still accepted for backwards
+        compatibility.
         """
         try:
             thread_key = get_tool_context().thread_key or ""
@@ -1531,6 +1533,8 @@ class SlackClient:
             channel, thread_ts = parts[1], parts[2]
         else:
             return None, None
+        if channel.startswith("D") and thread_ts == channel:
+            return channel, None
         if channel and thread_ts:
             return channel, thread_ts
         return None, None

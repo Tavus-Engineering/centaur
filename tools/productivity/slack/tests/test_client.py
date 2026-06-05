@@ -606,6 +606,25 @@ def test_upload_file_infers_destination_from_team_scoped_thread_key() -> None:
     assert fake_web_client.last_kwargs["thread_ts"] == "1780035646.228899"
 
 
+def test_upload_file_infers_stable_dm_channel_without_fake_thread_ts() -> None:
+    client, fake_web_client = _make_client()
+    client._resolve_channel = lambda channel: channel  # type: ignore[method-assign]
+    token = set_tool_context(
+        ToolContext(
+            name="slack",
+            thread_key="slack:T0AQQ46PL4C:D0B0XS7BLA3:D0B0XS7BLA3",
+        ),
+    )
+    try:
+        client.upload_file(content_base64="dGVzdA==", filename="random_data.csv")
+    finally:
+        reset_tool_context(token)
+
+    assert fake_web_client.last_kwargs is not None
+    assert fake_web_client.last_kwargs["channel"] == "D0B0XS7BLA3"
+    assert "thread_ts" not in fake_web_client.last_kwargs
+
+
 def test_upload_file_uploads_once_and_returns_when_share_lands(monkeypatch) -> None:
     """The stripped path does a single upload and verifies via files.info; no
     retry, no orphan deletion."""

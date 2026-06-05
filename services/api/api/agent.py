@@ -101,7 +101,7 @@ _VALID_STDOUT_EVENT_TYPES = frozenset(
 _ENGINE_HARNESSES = {"amp", "claude-code", "codex", "pi-mono"}
 _REUSABLE_DB_STATES = {"running", "idle", "delivering", "error", "suspended"}
 
-IDLE_TTL_S = int(os.getenv("IDLE_TTL_S", "86400"))  # 24 hours
+IDLE_TTL_S = int(os.getenv("IDLE_TTL_S", "900"))  # 15 minutes
 SUSPENDED_RETENTION_S = int(os.getenv("SUSPENDED_RETENTION_S", str(7 * 24 * 60 * 60)))
 MAX_ACTIVE_SANDBOX_SESSIONS = int(os.getenv("MAX_ACTIVE_SANDBOX_SESSIONS", "45"))
 STREAM_EOF_REATTACH_MAX = int(os.getenv("STREAM_EOF_REATTACH_MAX", "6"))

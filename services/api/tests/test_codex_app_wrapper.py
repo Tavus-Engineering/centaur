@@ -459,7 +459,7 @@ def test_reasoning_effort_bumps_on_code_work(monkeypatch) -> None:
         "",
     ]
     for text in code_work:
-        assert wrapper._reasoning_effort_for_text(text) == "high", text
+        assert wrapper._reasoning_effort_for_text(text) == "medium", text
     for text in everyday:
         assert wrapper._reasoning_effort_for_text(text) is None, text
 
