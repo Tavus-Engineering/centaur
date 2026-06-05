@@ -16,3 +16,4 @@ line in the PR that syncs it back.
 | 24f6cebb | slack: read non-member public channels/threads via SLACK_SEARCH_TOKEN user-token fallback | [#6](https://github.com/Tavus-Engineering/centaur/pull/6) |
 | 33213991 | sandbox: auto-raise codex reasoning effort to high for code/debug turns (heuristic on first message) | [#7](https://github.com/Tavus-Engineering/centaur/pull/7) |
 | ff489b5b | pylon tool: read issue threads (get_issue_context/messages/threads, issue-ref normalization) | [#8](https://github.com/Tavus-Engineering/centaur/pull/8) |
+| dde06b4c | cost controls: reuse unthreaded DM runtimes, shorten idle TTL, and use gpt-5.5 medium without fast mode | [#9](https://github.com/Tavus-Engineering/centaur/pull/9) |
