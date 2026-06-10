@@ -704,7 +704,7 @@ describe('normalizeSlackEnvelope', () => {
     expect(normalized?.thread_ts).toBe('1778875000.000001')
   })
 
-  it('treats a thread reply as addressed when the bot already replied in the thread', async () => {
+  it('does not treat a thread reply as addressed even when the bot already replied in the thread', async () => {
     const replies = mock(async () => ({
       ok: true,
       messages: [
@@ -746,8 +746,8 @@ describe('normalizeSlackEnvelope', () => {
     })
 
     expect(normalized?.is_mention).toBe(false)
-    expect(normalized?.is_addressed).toBe(true)
-    expect(normalized?.history_messages).toHaveLength(2)
+    expect(normalized?.is_addressed).toBe(false)
+    expect(normalized?.history_messages).toBeUndefined()
   })
 
   it('does not treat a thread reply as addressed when the bot never replied in the thread', async () => {

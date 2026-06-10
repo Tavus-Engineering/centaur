@@ -732,11 +732,21 @@ def start_or_resume_thread() -> str:
         or os.environ.get("AMP_CONTINUE_THREAD_ID")
         or ""
     ).strip()
+    result: dict[str, Any] | None = None
     if resume:
-        result = request(
-            "thread/resume", {"threadId": resume, "cwd": os.getcwd()}, timeout=60
-        )
-    else:
+        try:
+            result = request(
+                "thread/resume", {"threadId": resume, "cwd": os.getcwd()}, timeout=60
+            )
+        except Exception as exc:
+            # The rollout lives on the sandbox filesystem; after a respawn the
+            # old thread id points at nothing ("no rollout found ..."). Start a
+            # fresh thread instead of failing the turn.
+            sys.stderr.write(
+                f"thread/resume failed for {resume}: {exc}; starting fresh thread\n"
+            )
+            resume = ""
+    if result is None:
         result = request("thread/start", {"cwd": os.getcwd()}, timeout=60)
     thread = result.get("thread") or {}
     THREAD_ID = str(thread.get("id") or resume or uuid.uuid4())

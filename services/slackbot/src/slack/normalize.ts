@@ -100,21 +100,21 @@ export async function normalizeSlackEnvelope(opts: {
   if (isDm && !(await canAccessConversation(opts.client, event.channel))) return null
   const threadTs = event.thread_ts ?? event.ts
   const threadKeyTs = isDm && !event.thread_ts ? event.channel : threadTs
-  const isThreadReply = Boolean(event.thread_ts) && event.thread_ts !== event.ts
-  const historyMessages =
-    isMention || isDm || isThreadReply
-      ? await collectThreadHistorySafely({
-          client: opts.client,
-          channel: event.channel,
-          threadTs,
-          currentTs: event.ts,
-          teamId,
-          botUserId: opts.botUserId,
-          botId: opts.botId
-        })
-      : []
-  const botInThread = historyMessages.some(message => message.role === 'assistant')
-  const isAddressed = isMention || isDm || (isThreadReply && botInThread)
+  // Channel threads require an explicit @-mention: replying to every message
+  // in a joined thread drowned out human discussion (reverts the
+  // thread-follow-up half of "reply to DMs and joined threads").
+  const isAddressed = isMention || isDm
+  const historyMessages = isAddressed
+    ? await collectThreadHistorySafely({
+        client: opts.client,
+        channel: event.channel,
+        threadTs,
+        currentTs: event.ts,
+        teamId,
+        botUserId: opts.botUserId,
+        botId: opts.botId
+      })
+    : []
 
   return {
     thread_key: `slack:${teamId}:${event.channel}:${threadKeyTs}`,
