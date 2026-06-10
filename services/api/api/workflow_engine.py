@@ -66,6 +66,29 @@ log = structlog.get_logger()
 
 T = TypeVar("T")
 
+# Threads that already received a runtime-start failure message, keyed by
+# thread_key with the failure text and post time. A persistent spawn failure
+# would otherwise post the same error to the thread on every incoming message.
+_RUNTIME_FAILURE_NOTICE_TTL_S = 24 * 60 * 60
+_runtime_failure_notices: dict[str, tuple[str, float]] = {}
+
+
+def _should_post_runtime_failure(thread_key: str, error_text: str) -> bool:
+    """True if this thread hasn't been told about this spawn failure yet.
+
+    Deduped per (thread, error text) so a thread is notified once per distinct
+    failure rather than on every message while the failure persists.
+    """
+    now = time.monotonic()
+    for key, (_, posted_at) in list(_runtime_failure_notices.items()):
+        if now - posted_at > _RUNTIME_FAILURE_NOTICE_TTL_S:
+            _runtime_failure_notices.pop(key, None)
+    prior = _runtime_failure_notices.get(thread_key)
+    if prior is not None and prior[0] == error_text:
+        return False
+    _runtime_failure_notices[thread_key] = (error_text, now)
+    return True
+
 
 # ── Typed helpers ─────────────────────────────────────────────────────────
 
@@ -1229,26 +1252,35 @@ async def do_agent_turn(
                 agents_md_override=agents_md_override,
             )
         except Exception as exc:
-            try:
-                failure_session_id = await slackbot_client.open_agent_session(
-                    delivery=effective_delivery,
-                    metadata=effective_metadata,
-                    thread_key=effective_thread_key,
-                    title="Centaur",
-                    header=None,
-                )
-                if failure_session_id:
-                    await slackbot_client.session_text(
-                        failure_session_id,
-                        f"Failed to start the runtime: {exc}",
+            failure_text = f"Failed to start the runtime: {exc}"
+            if _should_post_runtime_failure(effective_thread_key, failure_text):
+                try:
+                    failure_session_id = await slackbot_client.open_agent_session(
+                        delivery=effective_delivery,
+                        metadata=effective_metadata,
+                        thread_key=effective_thread_key,
+                        title="Centaur",
+                        header=None,
                     )
-                    await slackbot_client.session_done(failure_session_id)
-            except Exception:
-                log.warning(
-                    "workflow_spawn_failure_session_failed",
+                    if failure_session_id:
+                        await slackbot_client.session_text(
+                            failure_session_id,
+                            failure_text,
+                        )
+                        await slackbot_client.session_done(failure_session_id)
+                except Exception:
+                    log.warning(
+                        "workflow_spawn_failure_session_failed",
+                        workflow_run_id=ctx.run_id,
+                        thread_key=effective_thread_key,
+                        exc_info=True,
+                    )
+            else:
+                log.info(
+                    "workflow_spawn_failure_notice_suppressed",
                     workflow_run_id=ctx.run_id,
                     thread_key=effective_thread_key,
-                    exc_info=True,
+                    error=str(exc),
                 )
             raise
         ag = int(spawn["assignment_generation"])

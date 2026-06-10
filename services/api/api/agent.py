@@ -861,16 +861,18 @@ async def get_or_spawn(
                     _get_runtime(session.sandbox_id)
                     return session
                 except Exception as exc:
+                    # Backends without real suspend support (e.g. the pod
+                    # controller, where pause deletes the pod and resume is a
+                    # no-op) can never bring a suspended sandbox back. Fall
+                    # through to the gone-container path and respawn with the
+                    # preserved agent_thread_id instead of failing the turn.
                     log.warning(
-                        "suspended_session_resume_failed",
+                        "suspended_session_resume_failed_respawning",
                         thread_key=thread_key,
                         sandbox=session.sandbox_id[:12],
                         error=str(exc),
                         exc_info=True,
                     )
-                    raise RuntimeError(
-                        f"failed to resume suspended sandbox: {session.sandbox_id}"
-                    ) from exc
             # Container is gone — save agent_thread_id and cursor for resume, clean up row
             old_agent_thread_id = session.agent_thread_id
             old_last_delivered_id = session.last_delivered_id
