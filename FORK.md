@@ -19,3 +19,4 @@ line in the PR that syncs it back.
 | dde06b4c | cost controls: reuse unthreaded DM runtimes, shorten idle TTL, and use gpt-5.5 medium without fast mode | [#9](https://github.com/Tavus-Engineering/centaur/pull/9) |
 | 1385fbfa | slackbot: ignore inaccessible DM events before agent handoff | [#10](https://github.com/Tavus-Engineering/centaur/pull/10) |
 | 5a598aae | api: respawn unresumable suspended sandboxes (pod backend) + post runtime-start failures once per thread | [#11](https://github.com/Tavus-Engineering/centaur/pull/11) |
+| 5ac94c35 | slackbot: channel-thread replies require @-mention (undoes joined-thread auto-reply from #2); codex wrapper falls back to fresh thread on dead rollout | [#12](https://github.com/Tavus-Engineering/centaur/pull/12) |
