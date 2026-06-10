@@ -18,3 +18,4 @@ line in the PR that syncs it back.
 | ff489b5b | pylon tool: read issue threads (get_issue_context/messages/threads, issue-ref normalization) | [#8](https://github.com/Tavus-Engineering/centaur/pull/8) |
 | dde06b4c | cost controls: reuse unthreaded DM runtimes, shorten idle TTL, and use gpt-5.5 medium without fast mode | [#9](https://github.com/Tavus-Engineering/centaur/pull/9) |
 | 1385fbfa | slackbot: ignore inaccessible DM events before agent handoff | [#10](https://github.com/Tavus-Engineering/centaur/pull/10) |
+| 5a598aae | api: respawn unresumable suspended sandboxes (pod backend) + post runtime-start failures once per thread | [#11](https://github.com/Tavus-Engineering/centaur/pull/11) |

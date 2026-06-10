@@ -2532,3 +2532,19 @@ async def test_wait_for_workflow_returns_completed_child_after_deadline(db_pool)
     assert child["run_id"] == child_run_id
     assert child["status"] == "completed"
     assert child["output_json"] == {"ok": True}
+
+
+def test_runtime_failure_notice_posted_once_per_thread():
+    from api import workflow_engine
+
+    workflow_engine._runtime_failure_notices.clear()
+    thread = "slack:T1:C1:123.456"
+    err = "Failed to start the runtime: failed to resume suspended sandbox: sb-1"
+
+    assert workflow_engine._should_post_runtime_failure(thread, err) is True
+    assert workflow_engine._should_post_runtime_failure(thread, err) is False
+    # A different failure on the same thread is announced again.
+    assert workflow_engine._should_post_runtime_failure(thread, "other error") is True
+    # Other threads are independent.
+    assert workflow_engine._should_post_runtime_failure("slack:T1:C2:9.9", err) is True
+    workflow_engine._runtime_failure_notices.clear()
