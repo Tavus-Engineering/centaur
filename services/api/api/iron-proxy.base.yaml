@@ -4,6 +4,11 @@ dns:
 
 proxy:
   tunnel_listen: ":8080"
+  # Codex remote compaction (POST api.openai.com/v1/responses/compact) is a
+  # non-streaming call that can take well over the default 30s to return
+  # headers at large context sizes; the default timeout turned every
+  # compaction into a synthesized 502 and killed the agent turn.
+  upstream_response_header_timeout: "300s"
 
 management:
   listen: ":9092"
@@ -76,6 +81,10 @@ transforms:
         - "addepar-firm"
         - "clientid"
         - "x-as-user-email"
+        - "signoz-api-key"
+        - "x-signoz-url"
+        - "/^x-amz-.*$/"
+        - "/^amz-sdk-.*$/"
         - "/^x-codex-.*$/"
         - "/^x-openai-.*$/"
         - "/^x-[a-z0-9-]*(api-key|apikey|secret|token|auth|key)$/"

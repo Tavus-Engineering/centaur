@@ -49,6 +49,36 @@ class _UnknownEventBackend:
         return "gone"
 
 
+class _CodexTurnFailedBackend:
+    """Codex turn that streams commentary, then dies (e.g. remote compaction 502)."""
+
+    async def stream_stdout(self, _session):
+        yield json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agentMessage",
+                    "id": "msg_1",
+                    "text": "One ambiguity remains; narrowing it down.",
+                },
+            }
+        )
+        yield json.dumps(
+            {
+                "type": "turn.failed",
+                "error": {
+                    "message": (
+                        "Error running remote compact task: unexpected status "
+                        "502 Bad Gateway"
+                    ),
+                },
+            }
+        )
+
+    async def status(self, _session):
+        return "gone"
+
+
 def test_elapsed_since_uses_monotonic_delta_when_available() -> None:
     from api.agent import _elapsed_since
 
@@ -140,6 +170,65 @@ async def test_stream_stdout_accepts_user_events_without_warning() -> None:
         call.args and call.args[0] == "stdout_unknown_event_type"
         for call in warning.call_args_list
     )
+
+
+def test_terminal_error_extracted_from_codex_turn_failed() -> None:
+    from api.agent import _terminal_error_from_harness_event
+
+    assert (
+        _terminal_error_from_harness_event(
+            {"type": "turn.failed", "error": {"message": "compact task failed"}}
+        )
+        == "compact task failed"
+    )
+    assert (
+        _terminal_error_from_harness_event(
+            {"type": "turn.failed", "error": "plain string error"}
+        )
+        == "plain string error"
+    )
+    assert (
+        _terminal_error_from_harness_event({"type": "turn.failed"})
+        == "Harness reported a failed turn"
+    )
+    assert _terminal_error_from_harness_event({"type": "turn.completed"}) is None
+
+
+@pytest.mark.asyncio
+async def test_stream_stdout_marks_codex_turn_failed_as_error() -> None:
+    from api.agent import _stream_stdout
+
+    session = SandboxSession(
+        sandbox_id="sbx-turn-failed",
+        thread_key="test:turn-failed",
+        harness="codex",
+        engine="codex",
+    )
+    rt = RuntimeState()
+    rt.turn_counter = 1
+    backend = _CodexTurnFailedBackend()
+
+    with (
+        patch("api.agent._persist_turn_messages", new_callable=AsyncMock),
+        patch("api.agent._db_complete_inflight_turn", new_callable=AsyncMock),
+    ):
+        events = [
+            event
+            async for event in _stream_stdout(
+                session,
+                backend,
+                rt,
+                turn_id=1,
+                t0=time.monotonic(),
+            )
+        ]
+
+    decoded = [json.loads(item["data"]) for item in events]
+    turn_done = next(evt for evt in decoded if evt.get("type") == "turn.done")
+    assert turn_done["is_error"] is True
+    assert "502 Bad Gateway" in turn_done["error"]
+    # The streamed commentary stays as the result so context is not lost.
+    assert turn_done["result"] == "One ambiguity remains; narrowing it down."
 
 
 @pytest.mark.asyncio

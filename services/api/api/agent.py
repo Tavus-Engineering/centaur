@@ -1100,6 +1100,19 @@ def _terminal_error_from_harness_event(event: dict) -> str | None:
             return message.strip()
         return "Harness reported an error"
 
+    if event_type == "turn.failed":
+        err = event.get("error")
+        if isinstance(err, str) and err.strip():
+            return err.strip()
+        if isinstance(err, dict):
+            message = err.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+        message = event.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return "Harness reported a failed turn"
+
     if event_type == "result":
         subtype = str(event.get("subtype") or "").strip().lower()
         is_error = bool(event.get("is_error")) or (subtype not in {"", "success"})
