@@ -27,8 +27,14 @@ jobs:
             const markerRe = /<!-- pr-review-slack-thread-ts: ([\d.]+) -->/;
             const slackToken = process.env.SLACK_BOT_TOKEN;
             const channelId = process.env.SLACK_CHANNEL_ID;
-            if (!slackToken) throw new Error('Missing CVI_BOT_SLACK_TOKEN');
-            if (!channelId) throw new Error('Missing SLACK_CHANNEL_ID');
+            if (!slackToken) {
+              core.warning('Skipping PR Slack notification: missing CVI_BOT_SLACK_TOKEN');
+              return;
+            }
+            if (!channelId) {
+              core.warning('Skipping PR Slack notification: missing SLACK_CHANNEL_ID');
+              return;
+            }
 
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
