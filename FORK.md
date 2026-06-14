@@ -21,3 +21,4 @@ line in the PR that syncs it back.
 | 5a598aae | api: respawn unresumable suspended sandboxes (pod backend) + post runtime-start failures once per thread | [#11](https://github.com/Tavus-Engineering/centaur/pull/11) |
 | 5ac94c35 | slackbot: channel-thread replies require @-mention (undoes joined-thread auto-reply from #2); codex wrapper falls back to fresh thread on dead rollout | [#12](https://github.com/Tavus-Engineering/centaur/pull/12) |
 | a9d47a12 | api: finalize codex turn.failed as failed_permanent + post failure notice to Slack; raise iron-proxy upstream header timeout to 300s (codex remote compaction); fold signoz/aws header allowlist into base.yaml | [#13](https://github.com/Tavus-Engineering/centaur/pull/13) |
+| dcfd647c | slackbot: route in-thread Watch Agent mentions through DM and post results back only after approval | [#14](https://github.com/Tavus-Engineering/centaur/pull/14) |
