@@ -2,7 +2,7 @@ name: PR Review Notifications
 
 on:
   pull_request:
-    types: [opened, ready_for_review, closed]
+    types: [opened, ready_for_review, synchronize, closed]
 
 permissions:
   pull-requests: write
@@ -11,19 +11,153 @@ permissions:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.user.login != 'cvi-bot[bot]'
+    if: >-
+      github.event.pull_request.user.login != 'cvi-bot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Send PR notification
-        uses: Tavus-Engineering/pr-changelog-action/review@main
+        uses: actions/github-script@v7
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CVI_BOT_SLACK_TOKEN }}
+          SLACK_CHANNEL_ID: C0AFT2E9D5Y
         with:
-          slack-bot-token: ${{ secrets.CVI_BOT_SLACK_TOKEN }}
-          slack-channel-id: C0AFT2E9D5Y
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          repo: ${{ github.repository }}
-          pr-number: ${{ github.event.pull_request.number }}
-          pr-title: ${{ github.event.pull_request.title }}
-          pr-url: ${{ github.event.pull_request.html_url }}
-          pr-author: ${{ github.event.pull_request.user.login }}
-          pr-merged: ${{ github.event.pull_request.merged }}
-          pr-draft: ${{ github.event.pull_request.draft }}
-          event-action: ${{ github.event.action }}
+          script: |
+            const markerPrefix = '<!-- pr-review-slack-thread-ts:';
+            const markerRe = /<!-- pr-review-slack-thread-ts: ([\d.]+) -->/;
+            const slackToken = process.env.SLACK_BOT_TOKEN;
+            const channelId = process.env.SLACK_CHANNEL_ID;
+            if (!slackToken) throw new Error('Missing CVI_BOT_SLACK_TOKEN');
+            if (!channelId) throw new Error('Missing SLACK_CHANNEL_ID');
+
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const action = context.payload.action;
+            const merged = Boolean(context.payload.pull_request.merged);
+
+            async function slackApi(method, payload) {
+              const response = await fetch(`https://slack.com/api/${method}`, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${slackToken}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+              });
+              const result = await response.json();
+              if (!result.ok) {
+                throw new Error(`Slack API ${method} failed: ${JSON.stringify(result)}`);
+              }
+              return result;
+            }
+
+            async function slackReaction(method, name, ts) {
+              try {
+                await slackApi(method, { channel: channelId, name, timestamp: ts });
+              } catch (error) {
+                core.warning(`${method} ${name} failed: ${error.message}`);
+              }
+            }
+
+            async function getPull() {
+              const { data } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: prNumber
+              });
+              return data;
+            }
+
+            function findThreadTs(body) {
+              return markerRe.exec(body || '')?.[1] || null;
+            }
+
+            function withThreadMarker(body, threadTs) {
+              const marker = `${markerPrefix} ${threadTs} -->`;
+              if ((body || '').includes(markerPrefix)) {
+                return (body || '').replace(markerRe, marker);
+              }
+              return body && body.trim() ? `${body.trimEnd()}\n${marker}` : marker;
+            }
+
+            async function storeThreadTs(pr, threadTs) {
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: prNumber,
+                body: withThreadMarker(pr.body || '', threadTs)
+              });
+            }
+
+            function formatDiffStats(pr) {
+              const parts = [];
+              if (pr.additions) parts.push(`:large_green_circle: +${pr.additions.toLocaleString()}`);
+              if (pr.deletions) parts.push(`:red_circle: -${pr.deletions.toLocaleString()}`);
+              if (pr.changed_files) {
+                parts.push(`${pr.changed_files.toLocaleString()} ${pr.changed_files === 1 ? 'file' : 'files'}`);
+              }
+              return parts.join('    ');
+            }
+
+            async function postOrUpdateReviewNotification() {
+              const pr = await getPull();
+              if (pr.draft) {
+                core.info(`No Slack notification for draft PR #${prNumber}`);
+                return;
+              }
+
+              const verb = action === 'synchronize' ? 'updated' : 'opened';
+              const author = pr.user?.login || context.actor;
+              const repoDisplay = `${owner}/${repo}`;
+              const text = `${author} ${verb} a PR in ${repoDisplay}\n<${pr.html_url}|${pr.title}>`;
+              const blocks = [{ type: 'section', text: { type: 'mrkdwn', text } }];
+              const statsText = formatDiffStats(pr);
+              if (statsText) {
+                blocks.push({
+                  type: 'context',
+                  elements: [{ type: 'mrkdwn', text: statsText }]
+                });
+              }
+
+              const existingThreadTs = findThreadTs(pr.body);
+              if (existingThreadTs) {
+                await slackApi('chat.update', {
+                  channel: channelId,
+                  ts: existingThreadTs,
+                  text,
+                  blocks,
+                  unfurl_links: false
+                });
+                core.info(`Updated PR Slack notification thread_ts=${existingThreadTs}`);
+                return;
+              }
+
+              const result = await slackApi('chat.postMessage', {
+                channel: channelId,
+                text,
+                blocks,
+                unfurl_links: false
+              });
+              await storeThreadTs(pr, result.ts);
+              await slackReaction('reactions.add', 'github-pr', result.ts);
+              core.info(`Posted PR Slack notification thread_ts=${result.ts}`);
+            }
+
+            async function updateClosedReaction() {
+              const pr = await getPull();
+              const threadTs = findThreadTs(pr.body);
+              if (!threadTs) {
+                core.info(`No stored Slack thread for closed PR #${prNumber}`);
+                return;
+              }
+              await slackReaction('reactions.remove', 'github-pr', threadTs);
+              await slackReaction('reactions.add', merged ? 'github-merged' : 'github-closed', threadTs);
+            }
+
+            if ((action === 'opened' || action === 'ready_for_review' || action === 'synchronize') && !merged) {
+              await postOrUpdateReviewNotification();
+            } else if (action === 'closed') {
+              await updateClosedReaction();
+            } else {
+              core.info(`No action for ${action}`);
+            }
