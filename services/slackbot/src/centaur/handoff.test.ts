@@ -180,4 +180,112 @@ describe('CentaurHandoff', () => {
       globalThis.fetch = originalFetch
     }
   })
+
+  it('includes routed thread metadata while delivering to the DM thread', async () => {
+    const originalFetch = globalThis.fetch
+    let capturedInit: RequestInit | undefined
+    const fetchMock = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+      capturedInit = init
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    })
+    globalThis.fetch = fetchMock as any
+    try {
+      const handoff = new CentaurHandoff(config)
+      const event: NormalizedSlackEvent = {
+        thread_key: 'slack:T123:D123:1778884000.000000',
+        message_id: 'slack:T123:C123:1778883001.000000',
+        team_id: 'T123',
+        user_id: 'U123',
+        channel_id: 'D123',
+        thread_ts: '1778884000.000000',
+        is_mention: true,
+        is_addressed: true,
+        parts: [{ type: 'text', text: 'routed request' }],
+        route: {
+          mode: 'dm_from_thread_mention',
+          source_team_id: 'T123',
+          source_channel_id: 'C123',
+          source_thread_ts: '1778883000.000000',
+          source_message_ts: '1778883001.000000',
+          source_request_url: 'https://slack.com/archives/C123/p1778883001000000',
+          source_thread_url: 'https://slack.com/archives/C123/p1778883000000000',
+          dm_channel_id: 'D123',
+          dm_thread_ts: '1778884000.000000'
+        },
+        slack: {
+          event_ts: '1778883001.000000',
+          message_ts: '1778883001.000000'
+        }
+      }
+
+      await handoff.emit(event)
+
+      const bodyText = capturedInit?.body
+      expect(typeof bodyText).toBe('string')
+      if (typeof bodyText !== 'string') throw new Error('expected JSON request body')
+      const body = JSON.parse(bodyText) as {
+        input: {
+          metadata: { route: NormalizedSlackEvent['route'] }
+          delivery: { channel: string; thread_ts: string }
+        }
+      }
+      expect(body.input.metadata.route).toEqual(event.route)
+      expect(body.input.delivery).toMatchObject({
+        channel: 'D123',
+        thread_ts: '1778884000.000000'
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('returns the newest completed execution result for routed DM publish approval', async () => {
+    const originalFetch = globalThis.fetch
+    const requestedUrls: string[] = []
+    const fetchMock = mock(async (input: string | URL | Request) => {
+      const url = input instanceof Request ? input.url : String(input)
+      requestedUrls.push(url)
+      if (url.includes('/agent/threads/')) {
+        return new Response(
+          JSON.stringify({
+            executions: [
+              { execution_id: 'exe_running', status: 'running' },
+              { execution_id: 'exe_empty', status: 'completed' },
+              { execution_id: 'exe_success', status: 'completed' }
+            ]
+          }),
+          { status: 200 }
+        )
+      }
+      if (url.endsWith('/agent/executions/exe_empty')) {
+        return new Response(JSON.stringify({ execution_id: 'exe_empty', result_text: '   ' }), {
+          status: 200
+        })
+      }
+      if (url.endsWith('/agent/executions/exe_success')) {
+        return new Response(
+          JSON.stringify({ execution_id: 'exe_success', result_text: 'Final answer\n' }),
+          { status: 200 }
+        )
+      }
+      return new Response(JSON.stringify({ error: 'unexpected_url' }), { status: 404 })
+    })
+    globalThis.fetch = fetchMock as any
+    try {
+      const handoff = new CentaurHandoff(config)
+
+      const result = await handoff.latestPostableExecutionResult(
+        'slack:T123:D123:1778884000.000000'
+      )
+
+      expect(result).toEqual({ execution_id: 'exe_success', result_text: 'Final answer' })
+      expect(requestedUrls).toEqual([
+        'http://centaur-api.test/agent/threads/slack%3AT123%3AD123%3A1778884000.000000/executions?limit=10',
+        'http://centaur-api.test/agent/executions/exe_empty',
+        'http://centaur-api.test/agent/executions/exe_success'
+      ])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })

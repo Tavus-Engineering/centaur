@@ -26,6 +26,10 @@ import { EnvSlackInstallationStore, SlackClientResolver } from './slack/installa
 import { normalizeSlackEnvelope } from './slack/normalize'
 import { markdownToStreamChunks } from './slack/render'
 import { verifySlackSignature } from './slack/signature'
+import {
+  maybePublishApprovedDmResultToThread,
+  routeThreadMentionToDm
+} from './slack/thread-routing'
 import { shouldAckWithReaction } from './slack/trivial-ack'
 import type { NormalizedSlackEvent, SlackEnvelope } from './slack/types'
 import type { AnyBlock, AnyChunk } from '@slack/types'
@@ -571,7 +575,7 @@ async function processSlackEvent(envelope: SlackEnvelope): Promise<void> {
         teamId: envelope.team_id,
         enterpriseId: envelope.enterprise_id
       })
-      const normalized = await normalizeSlackEnvelope({
+      let normalized = await normalizeSlackEnvelope({
         envelope,
         botUserId: installation.botUserId,
         botId: installation.botId,
@@ -600,6 +604,31 @@ async function processSlackEvent(envelope: SlackEnvelope): Promise<void> {
           'centaur.slackbot.ignore_reason': 'not_addressed'
         })
         return
+      }
+
+      const publishedDmResult = await maybePublishApprovedDmResultToThread({
+        client,
+        event: normalized,
+        latestPostableResult: threadKey => handoff.latestPostableExecutionResult(threadKey)
+      })
+      if (publishedDmResult) {
+        spanAttributes(span, {
+          'centaur.slackbot.event_action': 'publish_dm_result_to_thread'
+        })
+        return
+      }
+
+      const routed = await routeThreadMentionToDm(client, normalized)
+      if (routed !== normalized) {
+        normalized = routed
+        spanAttributes(span, {
+          'centaur.thread_key': normalized.thread_key,
+          'slack.channel_id': normalized.channel_id,
+          'slack.thread_ts': normalized.thread_ts,
+          'centaur.slackbot.route_mode': normalized.route?.mode,
+          'centaur.slackbot.route_source_channel_id': normalized.route?.source_channel_id,
+          'centaur.slackbot.route_source_thread_ts': normalized.route?.source_thread_ts
+        })
       }
 
       if (shouldAckWithReaction(normalized)) {
