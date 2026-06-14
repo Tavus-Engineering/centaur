@@ -1,0 +1,29 @@
+name: PR Review Notifications
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, closed]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login != 'cvi-bot[bot]'
+    steps:
+      - name: Send PR notification
+        uses: Tavus-Engineering/pr-changelog-action/review@main
+        with:
+          slack-bot-token: ${{ secrets.CVI_BOT_SLACK_TOKEN }}
+          slack-channel-id: C0AFT2E9D5Y
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ github.event.pull_request.number }}
+          pr-title: ${{ github.event.pull_request.title }}
+          pr-url: ${{ github.event.pull_request.html_url }}
+          pr-author: ${{ github.event.pull_request.user.login }}
+          pr-merged: ${{ github.event.pull_request.merged }}
+          pr-draft: ${{ github.event.pull_request.draft }}
+          event-action: ${{ github.event.action }}
