@@ -137,6 +137,145 @@ describe('Slack event HTTP dedupe', () => {
     }
   })
 
+  it('routes addressed channel-thread mentions into a DM workflow handoff', async () => {
+    process.env.SLACK_SIGNING_SECRET = 'test-signing-secret'
+    process.env.SLACK_BOT_TOKEN = 'xoxb-thread-route-test'
+    delete process.env.SLACKBOT_API_KEY
+    delete process.env.CENTAUR_API_KEY
+
+    const slackCalls: Array<{ path: string; body: Record<string, unknown> }> = []
+    const slackApi = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url)
+        const body = await slackApiBody(request)
+        slackCalls.push({ path: url.pathname, body })
+        if (url.pathname === '/api/auth.test') {
+          return Response.json({ ok: true, user_id: 'UBOT', bot_id: 'BBOT' })
+        }
+        if (url.pathname === '/api/conversations.replies') {
+          return Response.json({
+            ok: true,
+            messages: [
+              {
+                type: 'message',
+                user: 'UORIG',
+                text: 'Original customer issue',
+                ts: '1778883000.000000'
+              }
+            ]
+          })
+        }
+        if (url.pathname === '/api/reactions.add') {
+          return Response.json({ ok: true })
+        }
+        if (url.pathname === '/api/conversations.open') {
+          return Response.json({ ok: true, channel: { id: 'D123' } })
+        }
+        if (url.pathname === '/api/chat.postMessage') {
+          return Response.json({ ok: true, channel: 'D123', ts: '1778884000.000000' })
+        }
+        return Response.json({ ok: false, error: 'unexpected_slack_method' }, { status: 404 })
+      }
+    })
+    process.env.SLACK_API_URL = `http://127.0.0.1:${slackApi.port}/api/`
+
+    const centaurRequests: Array<{ path: string; body: Record<string, unknown> }> = []
+    const centaurApi = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url)
+        const body = (await request.json()) as Record<string, unknown>
+        centaurRequests.push({ path: url.pathname, body })
+        if (url.pathname === '/workflows/runs') {
+          return Response.json({ ok: true, run_id: 'run_123' })
+        }
+        return Response.json({ ok: false, error: 'unexpected_centaur_path' }, { status: 404 })
+      }
+    })
+    process.env.CENTAUR_API_URL = `http://127.0.0.1:${centaurApi.port}`
+
+    try {
+      const { app } = await import(`./index.ts?thread_route=${Date.now()}`)
+      const body = JSON.stringify({
+        type: 'event_callback',
+        event_id: 'Ev-thread-route',
+        team_id: 'T123',
+        event: {
+          type: 'app_mention',
+          user: 'U123',
+          channel: 'C123',
+          thread_ts: '1778883000.000000',
+          ts: '1778883001.000000',
+          text: '<@UBOT> investigate this'
+        }
+      })
+      const waits: Promise<unknown>[] = []
+      const response = await app.request(
+        '/api/webhooks/slack',
+        signedJsonRequest(body, process.env.SLACK_SIGNING_SECRET),
+        {},
+        {
+          waitUntil: (promise: Promise<unknown>) => {
+            waits.push(promise)
+          }
+        } as any
+      )
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ ok: true })
+      await Promise.allSettled(waits)
+
+      expect(slackCalls.find(call => call.path === '/api/reactions.add')?.body).toMatchObject({
+        channel: 'C123',
+        timestamp: '1778883001.000000',
+        name: 'incoming_envelope'
+      })
+      expect(slackCalls.find(call => call.path === '/api/conversations.open')?.body).toMatchObject({
+        users: 'U123'
+      })
+      const dmRoot = slackCalls.find(call => call.path === '/api/chat.postMessage')
+      expect(dmRoot?.body).toMatchObject({
+        channel: 'D123'
+      })
+      expect(dmRoot?.body.text).toContain('Original request:')
+      expect(dmRoot?.body.metadata).toMatchObject({
+        event_type: 'centaur_thread_dm_route',
+        event_payload: expect.objectContaining({
+          source_channel_id: 'C123',
+          source_thread_ts: '1778883000.000000',
+          source_message_ts: '1778883001.000000'
+        })
+      })
+
+      const workflow = centaurRequests.find(request => request.path === '/workflows/runs')?.body as
+        | { input?: Record<string, unknown> }
+        | undefined
+      expect(workflow?.input).toMatchObject({
+        thread_key: 'slack:T123:D123:1778884000.000000',
+        delivery: {
+          channel: 'D123',
+          thread_ts: '1778884000.000000'
+        },
+        metadata: {
+          route: expect.objectContaining({
+            mode: 'dm_from_thread_mention',
+            source_channel_id: 'C123',
+            source_thread_ts: '1778883000.000000',
+            dm_channel_id: 'D123',
+            dm_thread_ts: '1778884000.000000'
+          })
+        }
+      })
+      expect(JSON.stringify(workflow?.input)).toContain(
+        'Do you want me to post this answer if it succeeds?'
+      )
+    } finally {
+      await slackApi.stop()
+      await centaurApi.stop()
+    }
+  })
+
   it('acks duplicate Slack envelopes without scheduling duplicate processing', async () => {
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret'
     process.env.SLACK_EVENT_DEDUP_TTL_MS = '600000'

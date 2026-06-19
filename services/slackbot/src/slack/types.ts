@@ -31,6 +31,17 @@ export type NormalizedSlackEvent = {
   is_mention: boolean
   is_addressed: boolean
   parts: NormalizedPart[]
+  route?: {
+    mode: 'dm_from_thread_mention'
+    source_team_id: string
+    source_channel_id: string
+    source_thread_ts: string
+    source_message_ts: string
+    source_request_url: string
+    source_thread_url: string
+    dm_channel_id: string
+    dm_thread_ts: string
+  }
   history_messages?: Array<{
     message_id: string
     role?: 'user' | 'assistant'
