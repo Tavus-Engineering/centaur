@@ -416,7 +416,13 @@ def test_main_lazy_starts_app_server_after_input(monkeypatch) -> None:
 
     wrapper.main()
 
-    assert popen_args == ["codex", "app-server", "--listen", "stdio://"]
+    assert popen_args == [
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "app-server",
+        "--listen",
+        "stdio://",
+    ]
     assert requests[0] == (
         "initialize",
         {
@@ -435,6 +441,21 @@ def test_main_lazy_starts_app_server_after_input(monkeypatch) -> None:
     )
     assert {"type": "thread.started", "thread_id": "thread-123"} in emitted
     assert {"type": "turn.completed"} in emitted
+
+
+def test_codex_app_server_command_can_keep_inner_sandbox(monkeypatch) -> None:
+    wrapper = _load_wrapper()
+
+    monkeypatch.setenv("CENTAUR_CODEX_BYPASS_INNER_SANDBOX", "0")
+
+    assert wrapper._codex_app_server_command("high") == [
+        "codex",
+        "app-server",
+        "-c",
+        "model_reasoning_effort=high",
+        "--listen",
+        "stdio://",
+    ]
 
 
 def test_reasoning_effort_bumps_on_code_work(monkeypatch) -> None:
