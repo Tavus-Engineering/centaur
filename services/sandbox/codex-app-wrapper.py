@@ -89,6 +89,29 @@ def _reasoning_effort_for_text(text: str) -> str | None:
     if text and _CODE_WORK_RE.search(text):
         return (os.environ.get("CENTAUR_CODEX_EFFORT_HIGH") or "medium").strip()
     return None
+
+
+def _bypass_codex_inner_sandbox() -> bool:
+    """Let Kubernetes be the sandbox boundary instead of Codex's bwrap layer."""
+    return (
+        os.environ.get("CENTAUR_CODEX_BYPASS_INNER_SANDBOX", "1")
+        .strip()
+        .lower()
+        not in ("0", "false", "no", "off")
+    )
+
+
+def _codex_app_server_command(reasoning_effort: str | None = None) -> list[str]:
+    cmd = ["codex"]
+    if _bypass_codex_inner_sandbox():
+        cmd.append("--dangerously-bypass-approvals-and-sandbox")
+    cmd.append("app-server")
+    if reasoning_effort:
+        cmd += ["-c", f"model_reasoning_effort={reasoning_effort}"]
+    cmd += ["--listen", "stdio://"]
+    return cmd
+
+
 OTEL_PROXY: ThreadingHTTPServer | None = None
 OTEL_PROXY_TARGET_ENDPOINT: str | None = None
 OTEL_PROXY_SPAN_PREFIX = "codex."
@@ -157,9 +180,8 @@ def start_app_server(reasoning_effort: str | None = None) -> None:
         APP = None
         APP_INITIALIZED = False
 
-    cmd = ["codex", "app-server"]
+    cmd = _codex_app_server_command(reasoning_effort)
     if reasoning_effort:
-        cmd += ["-c", f"model_reasoning_effort={reasoning_effort}"]
         emit(
             {
                 "type": "system",
@@ -167,7 +189,6 @@ def start_app_server(reasoning_effort: str | None = None) -> None:
                 "effort": reasoning_effort,
             }
         )
-    cmd += ["--listen", "stdio://"]
     APP = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
