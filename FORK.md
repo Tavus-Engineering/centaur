@@ -23,3 +23,4 @@ line in the PR that syncs it back.
 | a9d47a12 | api: finalize codex turn.failed as failed_permanent + post failure notice to Slack; raise iron-proxy upstream header timeout to 300s (codex remote compaction); fold signoz/aws header allowlist into base.yaml | [#13](https://github.com/Tavus-Engineering/centaur/pull/13) |
 | dcfd647c | slackbot: route in-thread Watch Agent mentions through DM and post results back only after approval | [#14](https://github.com/Tavus-Engineering/centaur/pull/14) |
 | 964493b4 | sandbox: launch Codex with external-sandbox bypass so shell commands work in Kubernetes sandboxes | [#15](https://github.com/Tavus-Engineering/centaur/pull/15) |
+| 06a05515 | slackbot: dedupe Slack messages by message identity (team:channel:ts) so an app_mention + message double-delivery collapses to one DM handoff | [#16](https://github.com/Tavus-Engineering/centaur/pull/16) |

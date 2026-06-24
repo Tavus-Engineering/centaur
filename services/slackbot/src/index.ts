@@ -19,7 +19,7 @@ import {
 import { AgentSessionRenderer, withAgentSessionLock } from './slack/agent-session'
 import { authorizeSlackOrg } from './slack/authorization'
 import { CodexSessionRenderer, hasActiveCodexSession } from './slack/codex-session'
-import { EventDeduper, slackDedupKey } from './slack/dedup'
+import { EventDeduper, slackDedupKeys } from './slack/dedup'
 import { duplicateSlackAlertText, type DuplicateSlackEventDetails } from './slack/duplicate-alert'
 import { publishWatchAgentHome } from './slack/home'
 import { EnvSlackInstallationStore, SlackClientResolver } from './slack/installations'
@@ -149,13 +149,16 @@ const slackHandler = async (c: Context<{ Variables: Variables }>) => {
   if (envelope.type === 'url_verification') return c.json({ challenge: envelope.challenge })
 
   const event = envelope.event
-  const key = slackDedupKey({
+  const keys = slackDedupKeys({
     eventId: envelope.event_id,
+    eventType: typeof event?.type === 'string' ? event.type : undefined,
     teamId: envelope.team_id,
     channelId: typeof event?.channel === 'string' ? event.channel : undefined,
     messageTs: typeof event?.ts === 'string' ? event.ts : undefined
   })
-  if (!deduper.checkAndRemember(key)) {
+  const dedupe = deduper.checkAndRememberAll(keys)
+  if (!dedupe.ok) {
+    const key = dedupe.key
     const duplicate = duplicateSlackEventDetails(envelope, event, key)
     logWarn(
       key.startsWith('message:')
