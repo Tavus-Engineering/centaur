@@ -137,9 +137,10 @@ describe('Slack event HTTP dedupe', () => {
     }
   })
 
-  it('routes addressed channel-thread mentions into a DM workflow handoff', async () => {
+  it('routes addressed channel-thread mentions into one DM workflow handoff', async () => {
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret'
     process.env.SLACK_BOT_TOKEN = 'xoxb-thread-route-test'
+    process.env.SLACK_EVENT_DEDUP_TTL_MS = '600000'
     delete process.env.SLACKBOT_API_KEY
     delete process.env.CENTAUR_API_KEY
 
@@ -197,9 +198,9 @@ describe('Slack event HTTP dedupe', () => {
 
     try {
       const { app } = await import(`./index.ts?thread_route=${Date.now()}`)
-      const body = JSON.stringify({
+      const mentionBody = JSON.stringify({
         type: 'event_callback',
-        event_id: 'Ev-thread-route',
+        event_id: 'Ev-thread-route-app',
         team_id: 'T123',
         event: {
           type: 'app_mention',
@@ -210,10 +211,33 @@ describe('Slack event HTTP dedupe', () => {
           text: '<@UBOT> investigate this'
         }
       })
+      const messageBody = JSON.stringify({
+        type: 'event_callback',
+        event_id: 'Ev-thread-route-message',
+        team_id: 'T123',
+        event: {
+          type: 'message',
+          user: 'U123',
+          channel: 'C123',
+          thread_ts: '1778883000.000000',
+          ts: '1778883001.000000',
+          text: '<@UBOT> investigate this'
+        }
+      })
       const waits: Promise<unknown>[] = []
-      const response = await app.request(
+      const mentionResponse = await app.request(
         '/api/webhooks/slack',
-        signedJsonRequest(body, process.env.SLACK_SIGNING_SECRET),
+        signedJsonRequest(mentionBody, process.env.SLACK_SIGNING_SECRET),
+        {},
+        {
+          waitUntil: (promise: Promise<unknown>) => {
+            waits.push(promise)
+          }
+        } as any
+      )
+      const messageResponse = await app.request(
+        '/api/webhooks/slack',
+        signedJsonRequest(messageBody, process.env.SLACK_SIGNING_SECRET),
         {},
         {
           waitUntil: (promise: Promise<unknown>) => {
@@ -222,8 +246,10 @@ describe('Slack event HTTP dedupe', () => {
         } as any
       )
 
-      expect(response.status).toBe(200)
-      expect(await response.json()).toEqual({ ok: true })
+      expect(mentionResponse.status).toBe(200)
+      expect(await mentionResponse.json()).toEqual({ ok: true })
+      expect(messageResponse.status).toBe(200)
+      expect(await messageResponse.json()).toEqual({ ok: true, duplicate: true })
       await Promise.allSettled(waits)
 
       expect(slackCalls.find(call => call.path === '/api/reactions.add')?.body).toMatchObject({
@@ -234,7 +260,9 @@ describe('Slack event HTTP dedupe', () => {
       expect(slackCalls.find(call => call.path === '/api/conversations.open')?.body).toMatchObject({
         users: 'U123'
       })
-      const dmRoot = slackCalls.find(call => call.path === '/api/chat.postMessage')
+      const dmRootMessages = slackCalls.filter(call => call.path === '/api/chat.postMessage')
+      expect(dmRootMessages).toHaveLength(1)
+      const dmRoot = dmRootMessages[0]
       expect(dmRoot?.body).toMatchObject({
         channel: 'D123'
       })
@@ -251,6 +279,7 @@ describe('Slack event HTTP dedupe', () => {
       const workflow = centaurRequests.find(request => request.path === '/workflows/runs')?.body as
         | { input?: Record<string, unknown> }
         | undefined
+      expect(centaurRequests.filter(request => request.path === '/workflows/runs')).toHaveLength(1)
       expect(workflow?.input).toMatchObject({
         thread_key: 'slack:T123:D123:1778884000.000000',
         delivery: {
@@ -330,9 +359,9 @@ describe('Slack event HTTP dedupe', () => {
       expect(second.status).toBe(200)
       expect(await second.json()).toEqual({ ok: true, duplicate: true })
       expect(console.warn).toHaveBeenCalledWith(
-        'slack_duplicate_event_skipped',
+        'slack_duplicate_message_skipped',
         expect.objectContaining({
-          dedupe_key: 'event:Ev-duplicate',
+          dedupe_key: 'message:T123:C123:1778883099.579529',
           event_id: 'Ev-duplicate',
           team_id: 'T123',
           channel_id: 'C123',
