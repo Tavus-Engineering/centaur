@@ -20,6 +20,86 @@ function asList(value: unknown): unknown[] {
   return Array.isArray(value) ? value : []
 }
 
+const SECRET_ASSIGNMENT_RE =
+  /\b([A-Z0-9_]*(?:API[-_]?KEY|ACCESS[-_]?KEY|AUTH|CREDENTIAL|COOKIE|PASSWORD|PRIVATE[-_]?KEY|SECRET|TOKEN)[A-Z0-9_]*)(\s*=\s*)([^\s\r\n]+)/gim
+const SECRET_HEADER_RE =
+  /\b([A-Za-z0-9_-]*(?:api[-_]?key|apikey|authorization|cookie|credential|password|private[-_]?key|secret|token)[A-Za-z0-9_-]*)(\s*:\s*)([^\s,;}]+)/gim
+const SECRET_QUERY_RE =
+  /([?&](?:api[-_]?key|apikey|access[-_]?key|auth|password|secret|token)=)([^&#\s]+)/gi
+const BEARER_TOKEN_RE = /\bbearer\s+[A-Z0-9._~+/=-]+/gi
+const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi
+const SSN_RE = /\b\d{3}-\d{2}-\d{4}\b/g
+const PHONE_CANDIDATE_RE = /(?<!\w)(?:\+?\d[\d(). -]{8,}\d)(?!\w)/g
+const SECRET_FIELD_TOKENS = new Set(['auth', 'credential', 'password', 'secret', 'token'])
+const SECRET_FIELD_NAMES = new Set([
+  'accesskey',
+  'apikey',
+  'authorization',
+  'clientsecret',
+  'cookie',
+  'privatekey',
+  'accesstoken',
+  'refreshtoken'
+])
+const EMAIL_FIELD_NAMES = new Set(['email', 'useremail', 'authoremail'])
+const PHONE_FIELD_NAMES = new Set(['phone', 'phonenumber', 'userphone'])
+const SSN_FIELD_NAMES = new Set(['ssn', 'socialsecuritynumber'])
+
+function normalizeFieldName(fieldName?: string): string {
+  return (fieldName ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function fieldTokens(fieldName?: string): Set<string> {
+  const tokens = (fieldName ?? '').split(/(?<!^)(?=[A-Z])|[^A-Za-z0-9]+/).filter(Boolean)
+  return new Set(tokens.map(token => token.toLowerCase()))
+}
+
+function hasSecretToken(tokens: Set<string>): boolean {
+  for (const token of tokens) {
+    if (SECRET_FIELD_TOKENS.has(token)) return true
+  }
+  return false
+}
+
+function sanitizeRuntimeString(value: string): string {
+  return value
+    .replace(BEARER_TOKEN_RE, 'Bearer [REDACTED:secret]')
+    .replace(SECRET_ASSIGNMENT_RE, '$1$2[REDACTED:secret]')
+    .replace(SECRET_HEADER_RE, '$1$2[REDACTED:secret]')
+    .replace(SECRET_QUERY_RE, '$1[REDACTED:secret]')
+    .replace(EMAIL_RE, '[REDACTED:email]')
+    .replace(SSN_RE, '[REDACTED:ssn]')
+    .replace(PHONE_CANDIDATE_RE, candidate => {
+      const digits = candidate.replace(/\D/g, '').length
+      return digits >= 10 && digits <= 15 && !candidate.includes(':')
+        ? '[REDACTED:phone]'
+        : candidate
+    })
+}
+
+function sanitizeRuntimeValue(value: unknown, fieldName?: string): unknown {
+  if (value === null || value === undefined) return value
+  if (typeof value === 'boolean' || typeof value === 'number') return value
+  if (Array.isArray(value)) return value.map(item => sanitizeRuntimeValue(item, fieldName))
+  if (typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        sanitizeRuntimeValue(item, key)
+      ])
+    )
+  }
+  if (typeof value !== 'string') return value
+
+  const normalized = normalizeFieldName(fieldName)
+  const tokens = fieldTokens(fieldName)
+  if (SECRET_FIELD_NAMES.has(normalized) || hasSecretToken(tokens)) return '[REDACTED:secret]'
+  if (EMAIL_FIELD_NAMES.has(normalized) || tokens.has('email')) return '[REDACTED:email]'
+  if (PHONE_FIELD_NAMES.has(normalized) || tokens.has('phone')) return '[REDACTED:phone]'
+  if (SSN_FIELD_NAMES.has(normalized) || tokens.has('ssn')) return '[REDACTED:ssn]'
+  return sanitizeRuntimeString(value)
+}
+
 const CODEX_PASSTHROUGH_EVENT_TYPES = [
   'turn.plan.updated',
   'item.started',
@@ -631,6 +711,7 @@ function normalizeCodexItem(item: Record<string, unknown>, phase: string): Canon
 }
 
 function normalizeCodexEvent(event: Record<string, unknown>): CanonicalEvent[] {
+  event = sanitizeRuntimeValue(event) as Record<string, unknown>
   const eventType = asString(event.type)
 
   if (eventType === 'thread.started') {
@@ -639,7 +720,7 @@ function normalizeCodexEvent(event: Record<string, unknown>): CanonicalEvent[] {
   }
 
   if (eventType === 'assistant') {
-    return [event]
+    return [event as CanonicalEvent]
   }
 
   if (eventType === 'error') {

@@ -154,6 +154,27 @@ class TestCodex:
         )
         assert result == [event]
 
+    def test_command_execution_redacts_runtime_secret_output(self):
+        result = normalize_harness_event(
+            "codex",
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "commandExecution",
+                    "command": "env",
+                    "aggregated_output": "TAVUS_API_KEY=prod-token\nSIGNOZ-API-KEY: signoz-token\n",
+                    "exit_code": 0,
+                    "status": "completed",
+                },
+            },
+        )
+
+        output = result[0]["item"]["aggregated_output"]
+        assert "prod-token" not in output
+        assert "signoz-token" not in output
+        assert "TAVUS_API_KEY=[REDACTED:secret]" in output
+        assert "SIGNOZ-API-KEY: [REDACTED:secret]" in output
+
     def test_turn_failed(self):
         result = normalize_harness_event(
             "codex",

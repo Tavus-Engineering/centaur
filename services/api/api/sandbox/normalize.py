@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+
+from api.redaction import sanitize_runtime_value
 from typing import Any
 
 
@@ -863,6 +865,7 @@ def normalize_harness_event(engine: str, event: dict) -> list[dict]:
     list[dict]
         Zero or more canonical event dicts.
     """
+    event = sanitize_runtime_value(event)
     normalized = (engine or "").strip().lower()
 
     if not normalized:

@@ -45,6 +45,7 @@ from api.observability import (
     project_execution_observations,
     summarize_message_parts,
 )
+from api.redaction import sanitize_runtime_value
 from api.vm_metrics import (
     record_agent_execution,
     record_execution_by_user,
@@ -1219,6 +1220,7 @@ async def append_execution_event(
     event_kind: str,
     event_json: dict[str, Any],
 ) -> int:
+    safe_event_json = sanitize_runtime_value(event_json)
     return int(
         await pool.fetchval(
             "INSERT INTO agent_execution_events (thread_key, execution_id, event_kind, event_json) "
@@ -1226,7 +1228,7 @@ async def append_execution_event(
             thread_key,
             execution_id,
             event_kind,
-            canonical_json(event_json),
+            canonical_json(safe_event_json),
         )
     )
 
@@ -3200,6 +3202,7 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
             payload = decode_jsonb(evt.get("data"), {})
             if not isinstance(payload, dict):
                 continue
+            payload = sanitize_runtime_value(payload)
             if payload.get("session_id"):
                 harness_thread_id = str(payload.get("session_id") or "")
                 add_span_event(

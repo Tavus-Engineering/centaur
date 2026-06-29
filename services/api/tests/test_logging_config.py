@@ -32,6 +32,30 @@ def test_scrub_sensitive_fields_redacts_nested_pii_and_secrets():
     )
 
 
+def test_scrub_sensitive_fields_redacts_runtime_secret_shapes_in_free_text():
+    payload = {
+        "event": "command_output",
+        "output": "\n".join(
+            [
+                "TAVUS_API_KEY=prod-token",
+                "SIGNOZ-API-KEY: signoz-token",
+                "curl 'https://example.test/logs?api_key=query-token&limit=10'",
+                "Authorization: Bearer abc.def.ghi",
+            ]
+        ),
+    }
+
+    redacted = _scrub_sensitive_fields(None, "info", payload)
+
+    assert "prod-token" not in redacted["output"]
+    assert "signoz-token" not in redacted["output"]
+    assert "query-token" not in redacted["output"]
+    assert "abc.def.ghi" not in redacted["output"]
+    assert "TAVUS_API_KEY=[REDACTED:secret]" in redacted["output"]
+    assert "SIGNOZ-API-KEY: [REDACTED:secret]" in redacted["output"]
+    assert "?api_key=[REDACTED:secret]" in redacted["output"]
+
+
 def test_scrub_sensitive_fields_keeps_non_sensitive_values_readable():
     payload = {
         "event": "message_buffered",

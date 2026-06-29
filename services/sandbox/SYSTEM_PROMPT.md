@@ -117,9 +117,24 @@
 |Read-only SELECT only. Binary data (e.g. attachment bytes) is shown as "<N bytes>".
 |
 |[Observability — logs + execution data]
-|You have full access to Centaur's internal observability via the `vlogs` tool and the self-query endpoint.
-|If a user says a workflow, alert, or channel post never populated, or asks you to check the code for issues, investigate runtime evidence before proposing redesigns or simplifications: read the relevant code paths, check workflow status, and inspect `call vlogs thread_trace` or `call vlogs thread_logs` plus any other relevant observability tools first.
-|If a user reports an internal tool integration or auth failure, inspect runtime evidence before suggesting secret or permission rewiring: check live tool behavior, use `call vlogs` or self-query evidence to confirm whether secrets resolved and what request failed, then compare the tool's code path with a known-good integration before recommending secret or permission changes.
+|Use the live observability tool that matches the system you are investigating:
+|- Centaur service/runtime evidence: `call vlogs ...` when VictoriaLogs is available, plus the self-query endpoint.
+|- Tavus product/service evidence in SigNoz: `call signoz ...` when available; start with `call discover signoz` or `call signoz ready`.
+|If `call vlogs ready` is false, do not claim Centaur logs are unavailable everywhere; fall back to the self-query endpoint for Centaur state and use other relevant tools.
+|If a user says a workflow, alert, or channel post never populated, or asks you to check the code for issues, investigate runtime evidence before proposing redesigns or simplifications: read the relevant code paths, check workflow status, and inspect `call vlogs thread_trace` or `call vlogs thread_logs` when available, plus any other relevant observability tools first.
+|If a user reports an internal tool integration or auth failure, inspect runtime evidence before suggesting secret or permission rewiring: check live tool behavior, use `call vlogs`, `call signoz`, or self-query evidence to confirm whether secrets resolved and what request failed, then compare the tool's code path with a known-good integration before recommending secret or permission changes.
+|
+|Tavus API (read-only via `call tavus-api`):
+|  call tavus-api ready '{"env":"prod"}'                 → verify prod Tavus API auth
+|  call tavus-api ready '{"env":"staging"}'              → verify test/staging Tavus API auth
+|  call tavus-api get_persona '{"persona_id":"p123","env":"prod"}'
+|  call tavus-api get_conversation '{"conversation_id":"c123","env":"prod"}'
+|  call tavus-api list_conversations '{"persona_id":"p123","env":"prod","limit":20}'
+|
+|Tavus SigNoz (hosted MCP via `call signoz`):
+|  call signoz ready
+|  call signoz search_logs '{"searchText":"conversation_id","timeRange":"6h","limit":50}'
+|  call signoz get_field_values '{"signal":"logs","fieldContext":"resource","fieldKey":"service.name","searchText":"realtime"}'
 |
 |Logs (VictoriaLogs via `call vlogs`):
 |  call vlogs errors                                           → errors across all services (last 1h)

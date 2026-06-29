@@ -255,7 +255,8 @@ centaur/
 │   ├── agent_loop.py     # Recurring agent polling/monitoring loop
 │   └── multi_step_demo.py       # Demo: branching, loops, conditionals
 ├── scripts/              # Operational scripts
-└── Justfile              # Local Helm/Kubernetes workflow
+├── Justfile              # Local Helm/Kubernetes workflow
+└── Makefile              # Production deploy wrapper for Tavus fork images
 ```
 
 ## Terminology
@@ -289,6 +290,24 @@ For E2E testing, always:
 4. Verify results locally
 5. Only then commit, push, and let CI/CD handle production
 
+## Deploy Request Workflow
+
+When the user says "deploy" for Centaur, do the whole deploy workflow unless they
+explicitly ask for a narrower dry run:
+
+1. Finish the implementation and run the relevant local tests/builds first.
+2. Commit the change on a branch.
+3. Add the required `FORK.md` entry for the Tavus fork change, including the commit
+   hash, one-line description, and PR URL.
+4. Push the branch.
+5. Run `make deploy` from the deploy checkout so the API and sandbox images are
+   built with immutable `fork-<sha>` tags, imported into k3s, and rolled out with
+   Helm `--reuse-values`.
+
+Do not replace this flow with ad hoc `helm upgrade` commands unless `make deploy`
+is broken and the user explicitly approves the fallback. If a fallback is used,
+preserve all existing Helm values and report exactly what was run.
+
 ### Deploying to `samuel-a100`
 
 `samuel-a100` is a shared production host. It also runs a request-handler preview
@@ -313,6 +332,12 @@ k3s and Helm need the k3s kubeconfig explicitly:
 
 ```bash
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+```
+
+For API/sandbox deploys, use the checked-in wrapper:
+
+```bash
+make deploy
 ```
 
 For a Slackbot-only deploy, build a unique immutable local image tag, import it into
