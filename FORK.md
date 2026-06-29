@@ -24,3 +24,4 @@ line in the PR that syncs it back.
 | dcfd647c | slackbot: route in-thread Watch Agent mentions through DM and post results back only after approval | [#14](https://github.com/Tavus-Engineering/centaur/pull/14) |
 | 964493b4 | sandbox: launch Codex with external-sandbox bypass so shell commands work in Kubernetes sandboxes | [#15](https://github.com/Tavus-Engineering/centaur/pull/15) |
 | 06a05515 | slackbot: dedupe Slack messages by message identity (team:channel:ts) so an app_mention + message double-delivery collapses to one DM handoff | [#16](https://github.com/Tavus-Engineering/centaur/pull/16) |
+| 342b02b1 | api/sandbox: add Watch Agent Tavus API and SigNoz tool access with runtime redaction | [#17](https://github.com/Tavus-Engineering/centaur/pull/17) |
