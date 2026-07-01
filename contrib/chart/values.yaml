@@ -354,6 +354,14 @@ apiRs:
   # idle_timeout_ms. 0 disables the corresponding arm.
   sandboxCleanupIntervalSecs: 300
   sandboxIdleCleanupBackstopSecs: 21600 # 6 hours
+  activitySummary:
+    enabled: false
+    model: gpt-5.4-nano
+    openaiBaseUrl: https://api.openai.com/v1
+    minIntervalSecs: 8
+    timeoutSecs: 5
+    maxFacts: 12
+    maxOutputTokens: 128
   ironProxy:
     mode: enabled
   metrics:
