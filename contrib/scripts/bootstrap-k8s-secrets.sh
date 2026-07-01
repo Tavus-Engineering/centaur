@@ -12,6 +12,12 @@ Creates the required local-dev Kubernetes infra Secrets consumed by the Helm cha
 Requires OP_SERVICE_ACCOUNT_TOKEN, OP_VAULT, SLACK_BOT_TOKEN,
 SLACK_SIGNING_SECRET, and SLACKBOT_API_KEY in the shell environment.
 
+Optional: HEARTBEAT_WEBHOOK_SECRET — the shared HMAC secret for the
+heartbeat_investigation webhook. Set it to the SAME value stored in
+cvi-heartbeat's vault to enable Watch Agent failure investigations; if unset,
+a random value is generated (the webhook endpoint stays functional but the
+integration won't authenticate until both sides share a value).
+
 Optional 1Password Connect bootstrap (when ironProxy.manager.secretSource is
 set to onepassword-connect in the Helm values):
   OP_CONNECT_CREDENTIALS_FILE  path to 1password-credentials.json; if set,
@@ -186,6 +192,7 @@ else
     --from-literal=SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN"
     --from-literal=SLACK_SIGNING_SECRET="$SLACK_SIGNING_SECRET"
     --from-literal=SLACKBOT_API_KEY="$SLACKBOT_API_KEY"
+    --from-literal=HEARTBEAT_WEBHOOK_SECRET="${HEARTBEAT_WEBHOOK_SECRET:-$(rand_hex)}"
     --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
     --from-literal=DATABASE_URL="$DATABASE_URL"
     --from-literal=IRON_CONTROL_DATABASE_URL="$IRON_CONTROL_DATABASE_URL"
