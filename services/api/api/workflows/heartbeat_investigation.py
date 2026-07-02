@@ -2,11 +2,12 @@
 
 Triggered by an HMAC-signed webhook from the ``cvi-heartbeat`` service. When a
 heartbeat fails, cvi-heartbeat posts a permanent failure message to the
-``#heartbeats-plus-plus`` channel and fires this webhook with the failure
-context + the Slack coordinates of that message. The Watch Agent (``eng``
-persona) investigates the failure and its result is delivered as a threaded
-reply on the failure message, so the analysis travels with the failure as it
-scrolls up the channel.
+``#heartbeat-plus-minus`` channel (the A/B "new style" channel, run in parallel
+with the legacy ``#heartbeat-plus-plus``) and fires this webhook with the
+failure context + the Slack coordinates of that message. The Watch Agent
+(``eng`` persona) investigates the failure and its result is delivered as a
+threaded reply on the failure message, so the analysis travels with the failure
+as it scrolls up the channel.
 
 Auth: HMAC over the raw request body (``X-Webhook-Signature: sha256=<hex>``),
 verified by the shared webhook router. The idempotency/trigger key is taken from
