@@ -26,3 +26,4 @@ line in the PR that syncs it back.
 | 06a05515 | slackbot: dedupe Slack messages by message identity (team:channel:ts) so an app_mention + message double-delivery collapses to one DM handoff | [#16](https://github.com/Tavus-Engineering/centaur/pull/16) |
 | 342b02b1 | api/sandbox: add Watch Agent Tavus API and SigNoz tool access with runtime redaction | [#17](https://github.com/Tavus-Engineering/centaur/pull/17) |
 | c21a8ed6 | api: heartbeat_investigation workflow — HMAC webhook triggers a Watch Agent investigation delivered to the failure's Slack thread | [#18](https://github.com/Tavus-Engineering/centaur/pull/18) |
+| e783da88 | docs: correct heartbeat channel names in investigation docstring (#heartbeat-plus-minus / #heartbeat-plus-plus) | [#19](https://github.com/Tavus-Engineering/centaur/pull/19) |
