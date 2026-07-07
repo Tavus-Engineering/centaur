@@ -4,9 +4,13 @@ import json
 import os
 import subprocess
 from pathlib import Path
+import tomllib
 
 
 ENTRYPOINT_SH = Path(__file__).resolve().parents[2] / "sandbox" / "entrypoint.sh"
+CODEX_HARNESS_CONFIG = (
+    Path(__file__).resolve().parents[3] / "harness" / "codex" / "config.toml"
+)
 
 
 def _write_codex_harness_config(home: Path) -> Path:
@@ -26,7 +30,7 @@ def _write_codex_harness_config(home: Path) -> Path:
                 'sandbox_mode = "workspace-write"',
                 "check_for_update_on_startup = true",
                 "suppress_unstable_features_warning = true",
-                'service_tier = "default"',
+                'service_tier = "flex"',
                 "",
                 "[tools]",
                 "view_image = true",
@@ -53,6 +57,12 @@ def _write_codex_harness_config(home: Path) -> Path:
         )
     )
     return harness_dir
+
+
+def test_baked_codex_harness_config_uses_supported_service_tier() -> None:
+    config = tomllib.loads(CODEX_HARNESS_CONFIG.read_text())
+
+    assert config["service_tier"] in {"fast", "flex"}
 
 
 def test_sandbox_entrypoint_bootstraps_mock_google_adc(tmp_path: Path) -> None:
@@ -107,7 +117,7 @@ def test_sandbox_entrypoint_bootstraps_mock_google_adc(tmp_path: Path) -> None:
     assert 'plan_mode_reasoning_effort = "high"' in codex_config
     assert 'approval_policy = "on-request"' in codex_config
     assert 'sandbox_mode = "workspace-write"' in codex_config
-    assert 'service_tier = "default"' in codex_config
+    assert 'service_tier = "flex"' in codex_config
     assert "max_concurrent_threads_per_session = 2" in codex_config
 
 
