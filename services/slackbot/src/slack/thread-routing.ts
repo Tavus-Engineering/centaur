@@ -238,6 +238,7 @@ async function loadRoutedThreadStateFromDmRoot(
   const response = await client.conversations.replies({
     channel: channelId,
     ts: threadTs,
+    include_all_metadata: true,
     limit: 20
   })
   if (!response.ok || !Array.isArray(response.messages)) {

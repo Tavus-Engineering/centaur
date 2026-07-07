@@ -86,27 +86,28 @@ describe('thread mention DM routing', () => {
       channel: 'C123',
       ts: '1778885000.000000'
     }))
+    const conversationsReplies = mock(async () => ({
+      ok: true,
+      messages: [
+        {
+          ts: '1778884000.000000',
+          metadata: {
+            event_type: 'centaur_thread_dm_route',
+            event_payload: {
+              source_team_id: 'T123',
+              source_channel_id: 'C123',
+              source_thread_ts: '1778883000.000000',
+              source_message_ts: '1778883001.000000',
+              source_request_url: 'https://slack.com/archives/C123/p1778883001000000',
+              source_thread_url: 'https://slack.com/archives/C123/p1778883000000000'
+            }
+          }
+        }
+      ]
+    }))
     const client = slackClient({
       conversations: {
-        replies: mock(async () => ({
-          ok: true,
-          messages: [
-            {
-              ts: '1778884000.000000',
-              metadata: {
-                event_type: 'centaur_thread_dm_route',
-                event_payload: {
-                  source_team_id: 'T123',
-                  source_channel_id: 'C123',
-                  source_thread_ts: '1778883000.000000',
-                  source_message_ts: '1778883001.000000',
-                  source_request_url: 'https://slack.com/archives/C123/p1778883001000000',
-                  source_thread_url: 'https://slack.com/archives/C123/p1778883000000000'
-                }
-              }
-            }
-          ]
-        }))
+        replies: conversationsReplies
       },
       chat: { postMessage: chatPostMessage }
     })
@@ -120,6 +121,9 @@ describe('thread mention DM routing', () => {
       maybePublishApprovedDmResultToThread({ client, event, latestPostableResult })
     ).resolves.toBe(true)
 
+    expect(conversationsReplies).toHaveBeenCalledWith(
+      expect.objectContaining({ include_all_metadata: true })
+    )
     expect(latestPostableResult).toHaveBeenCalledWith('slack:T123:D123:1778884000.000000')
     expect(chatPostMessage).toHaveBeenNthCalledWith(
       1,
