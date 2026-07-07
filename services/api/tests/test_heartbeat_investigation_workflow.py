@@ -64,12 +64,24 @@ def test_build_prompt_includes_context_and_tldr_instruction():
     assert "TL;DR" in prompt
 
 
+def test_build_prompt_requires_realtime_replica_rate_limit_checklist():
+    prompt = _build_prompt(_webhook_input(conversation_id="c67c1c61738c44c9").failure)
+    assert "Required SigNoz checklist" in prompt
+    assert "call signoz ready" in prompt
+    assert '"service":"realtime-replica"' in prompt
+    assert '"searchText":"c67c1c61738c44c9"' in prompt
+    assert "Too Many Requests" in prompt
+    assert "429" in prompt
+    assert "ConnectError" in prompt
+    assert "HTTP error" in prompt
+    assert "TransportStep failed to boot" in prompt
+    assert "livekit_ffi" in prompt
+
+
 @pytest.mark.asyncio
 async def test_handler_dispatches_investigation_to_failure_thread():
     inp = _webhook_input()
-    with patch(
-        "api.workflow_engine.do_agent_turn", new_callable=AsyncMock
-    ) as do_turn:
+    with patch("api.workflow_engine.do_agent_turn", new_callable=AsyncMock) as do_turn:
         do_turn.return_value = {"result_text": "investigated"}
         await handler(inp, FakeContext())
 
