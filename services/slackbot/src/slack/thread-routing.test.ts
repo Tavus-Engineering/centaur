@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from 'bun:test'
 import type { WebClient } from '@slack/web-api'
 import {
   maybePublishApprovedDmResultToThread,
+  maybePromptRoutedDmPostback,
   routeThreadMentionToDm,
   shouldRouteThreadMentionToDm
 } from './thread-routing'
@@ -146,6 +147,119 @@ describe('thread mention DM routing', () => {
       })
     )
   })
+
+  it('treats post back as DM result approval', async () => {
+    const chatPostMessage = mock(async () => ({
+      ok: true,
+      channel: 'C123',
+      ts: '1778885000.000000'
+    }))
+    const client = slackClient({
+      conversations: {
+        replies: mock(async () => ({
+          ok: true,
+          messages: [routedDmRootMessage()]
+        }))
+      },
+      chat: { postMessage: chatPostMessage }
+    })
+    const latestPostableResult = mock(async () => ({
+      execution_id: 'exe_123',
+      result_text: 'Final answer'
+    }))
+    const event = dmApprovalEvent({
+      parts: [{ type: 'text', text: 'post back' }]
+    })
+
+    expect(
+      maybePublishApprovedDmResultToThread({ client, event, latestPostableResult })
+    ).resolves.toBe(true)
+    expect(chatPostMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'C123',
+        thread_ts: '1778883000.000000',
+        text: expect.stringContaining('Final answer')
+      })
+    )
+  })
+
+  it('prompts routed DM users to post successful results back', async () => {
+    const chatPostMessage = mock(async () => ({
+      ok: true,
+      channel: 'D123',
+      ts: '1778885001.000000'
+    }))
+    const client = slackClient({
+      conversations: {
+        replies: mock(async () => ({
+          ok: true,
+          messages: [routedDmRootMessage()]
+        }))
+      },
+      chat: { postMessage: chatPostMessage }
+    })
+
+    expect(
+      maybePromptRoutedDmPostback({
+        client,
+        channelId: 'D123',
+        threadTs: '1778884000.000000'
+      })
+    ).resolves.toBe(true)
+
+    expect(chatPostMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'D123',
+        thread_ts: '1778884000.000000',
+        text: expect.stringContaining('Reply `post it`'),
+        metadata: expect.objectContaining({
+          event_type: 'centaur_thread_postback_prompt',
+          event_payload: expect.objectContaining({
+            source_channel_id: 'C123',
+            source_thread_ts: '1778883000.000000'
+          })
+        })
+      })
+    )
+  })
+
+  it('does not duplicate routed DM postback prompts', async () => {
+    const chatPostMessage = mock(async () => ({
+      ok: true,
+      channel: 'D123',
+      ts: '1778885001.000000'
+    }))
+    const client = slackClient({
+      conversations: {
+        replies: mock(async () => ({
+          ok: true,
+          messages: [
+            routedDmRootMessage(),
+            {
+              ts: '1778885001.000000',
+              metadata: {
+                event_type: 'centaur_thread_postback_prompt',
+                event_payload: {
+                  source_channel_id: 'C123',
+                  source_thread_ts: '1778883000.000000'
+                }
+              }
+            }
+          ]
+        }))
+      },
+      chat: { postMessage: chatPostMessage }
+    })
+
+    expect(
+      maybePromptRoutedDmPostback({
+        client,
+        channelId: 'D123',
+        threadTs: '1778884000.000000'
+      })
+    ).resolves.toBe(false)
+    expect(chatPostMessage).not.toHaveBeenCalled()
+  })
 })
 
 function channelThreadMentionEvent(
@@ -171,7 +285,7 @@ function channelThreadMentionEvent(
   }
 }
 
-function dmApprovalEvent(): NormalizedSlackEvent {
+function dmApprovalEvent(overrides: Partial<NormalizedSlackEvent> = {}): NormalizedSlackEvent {
   return {
     thread_key: 'slack:T123:D123:1778884000.000000',
     message_id: 'slack:T123:D123:1778884001.000000',
@@ -187,10 +301,28 @@ function dmApprovalEvent(): NormalizedSlackEvent {
       event_ts: '1778884001.000000',
       message_ts: '1778884001.000000',
       bot_user_id: 'UBOT'
-    }
+    },
+    ...overrides
   }
 }
 
 function slackClient(value: unknown): WebClient {
   return value as WebClient
+}
+
+function routedDmRootMessage() {
+  return {
+    ts: '1778884000.000000',
+    metadata: {
+      event_type: 'centaur_thread_dm_route',
+      event_payload: {
+        source_team_id: 'T123',
+        source_channel_id: 'C123',
+        source_thread_ts: '1778883000.000000',
+        source_message_ts: '1778883001.000000',
+        source_request_url: 'https://slack.com/archives/C123/p1778883001000000',
+        source_thread_url: 'https://slack.com/archives/C123/p1778883000000000'
+      }
+    }
+  }
 }

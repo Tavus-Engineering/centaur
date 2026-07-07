@@ -15,10 +15,7 @@ import {
   type StreamTaskStatus
 } from './streaming'
 import { buildFinalFallbackText, sanitizeFinalMessagePayload } from './final-message'
-import {
-  markdownToStreamChunks,
-  renderMarkdownBlocks
-} from './render'
+import { markdownToStreamChunks, renderMarkdownBlocks } from './render'
 import { clipLines } from './streaming'
 
 type Segment = {
@@ -106,6 +103,10 @@ function headerBlock(header: string): AnyBlock {
 
 const sessions = new Map<string, AgentSessionState>()
 const sessionQueues = new Map<string, Promise<void>>()
+const completedSessionTargets = new Map<
+  string,
+  { channel: string; parentTs: string; completedAt: number }
+>()
 const THINKING_STATUS = 'Thinking...'
 const TEXT_FLUSH_INTERVAL_MS = 250
 const TEXT_FLUSH_CHARS = 1000
@@ -118,6 +119,37 @@ const FINAL_PLAN_DETAILS_LINES = slackReplyLimits.finalPlan.taskDetailsCodeBlock
 const FINAL_PLAN_OUTPUT_LINES = slackReplyLimits.finalPlan.taskOutputCodeBlockLines
 const MAX_LIVE_TEXT_CHARS = slackReplyLimits.stream.maxLiveTextChars
 const DURABLE_STREAMED_ANSWER_TASK_THRESHOLD = 10
+const COMPLETED_SESSION_TARGET_TTL_MS = 10 * 60 * 1000
+
+export function agentSessionTarget(
+  sessionId: string
+): { channel: string; parentTs: string } | null {
+  const state = sessions.get(sessionId)
+  if (state) return { channel: state.channel, parentTs: state.parentTs }
+  const completed = completedSessionTargets.get(sessionId)
+  if (!completed) return null
+  if (Date.now() - completed.completedAt > COMPLETED_SESSION_TARGET_TTL_MS) {
+    completedSessionTargets.delete(sessionId)
+    return null
+  }
+  return { channel: completed.channel, parentTs: completed.parentTs }
+}
+
+export function hasAgentSession(sessionId: string): boolean {
+  return sessions.has(sessionId)
+}
+
+function rememberCompletedSessionTarget(sessionId: string, state: AgentSessionState): void {
+  completedSessionTargets.set(sessionId, {
+    channel: state.channel,
+    parentTs: state.parentTs,
+    completedAt: Date.now()
+  })
+}
+
+function forgetCompletedSessionTarget(sessionId: string): void {
+  completedSessionTargets.delete(sessionId)
+}
 
 export class AgentSessionRenderer {
   constructor(private readonly client: WebClient) {}
@@ -125,6 +157,7 @@ export class AgentSessionRenderer {
   async open(input: OpenAgentSessionInput): Promise<{ sessionId: string }> {
     const id = ulid()
     const header = input.header?.trim() || undefined
+    forgetCompletedSessionTarget(id)
     sessions.set(id, {
       id,
       channel: input.channel,
@@ -150,7 +183,11 @@ export class AgentSessionRenderer {
     return await this.queueText(state, segment, markdown)
   }
 
-  async textDelta(sessionId: string, markdownDelta: string, opts: TextOptions = {}): Promise<number> {
+  async textDelta(
+    sessionId: string,
+    markdownDelta: string,
+    opts: TextOptions = {}
+  ): Promise<number> {
     if (!markdownDelta) return 0
     const state = requireSession(sessionId)
     const segment = currentSegment(state)
@@ -242,7 +279,10 @@ export class AgentSessionRenderer {
       if (!state.statusCleared) {
         state.statusCleared = await this.setStatus(sessionId, '')
       }
-      if (closed) sessions.delete(sessionId)
+      if (closed) {
+        rememberCompletedSessionTarget(sessionId, state)
+        sessions.delete(sessionId)
+      }
     }
     return { streamedTextChars }
   }

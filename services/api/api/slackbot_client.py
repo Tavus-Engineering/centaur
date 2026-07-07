@@ -187,12 +187,16 @@ async def session_step(
     await post(f"/api/slack/agent-sessions/{session_id}/step", body)
 
 
-async def session_done(session_id: str | None, thread_id: str | None = None) -> None:
+async def session_done(
+    session_id: str | None, thread_id: str | None = None, status: str | None = None
+) -> None:
     if not session_id:
         return
     body: dict[str, Any] = {}
     if thread_id:
         body["thread_id"] = thread_id
+    if status:
+        body["status"] = status
     await post(f"/api/slack/agent-sessions/{session_id}/done", body)
 
 
