@@ -2980,10 +2980,10 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
         finalize_session_id = slackbot_session_id or str(
             execution_metadata.get("slackbot_agent_session_id") or ""
         )
-        if finalize_session_id and not slackbot_done and slackbot_forward_live:
+        if finalize_session_id and slackbot_forward_live:
             try:
                 terminal_result_sent_to_slackbot = False
-                if status == "failed_permanent":
+                if not slackbot_done and status == "failed_permanent":
                     failure_notice = (
                         ":warning: This run ended early without completing"
                         + (f": {error_text}" if error_text else ".")
@@ -2994,7 +2994,9 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
                             finalize_session_id, failure_notice
                         )
                 await slackbot_client.session_done(
-                    finalize_session_id, harness_thread_id or None
+                    finalize_session_id,
+                    harness_thread_id or None,
+                    status=status,
                 )
                 slackbot_done = True
                 log.info(

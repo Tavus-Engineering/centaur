@@ -5,6 +5,7 @@ import type { NormalizedSlackEvent, NormalizedTextPart } from './types'
 const THREAD_MENTION_DM_REACTION = 'incoming_envelope'
 const ROUTE_METADATA_TYPE = 'centaur_thread_dm_route'
 const RESULT_POSTED_METADATA_TYPE = 'centaur_thread_result_posted'
+const POSTBACK_PROMPT_METADATA_TYPE = 'centaur_thread_postback_prompt'
 
 type SlackMessageWithMetadata = {
   metadata?: {
@@ -25,6 +26,11 @@ type RoutedThreadPayload = {
 export type PostableExecutionResult = {
   execution_id: string
   result_text: string
+}
+
+type RoutedThreadState = {
+  routePayload: RoutedThreadPayload | null
+  prompted: boolean
 }
 
 export function shouldRouteThreadMentionToDm(event: NormalizedSlackEvent): boolean {
@@ -149,6 +155,39 @@ export async function maybePublishApprovedDmResultToThread(opts: {
   return true
 }
 
+export async function maybePromptRoutedDmPostback(opts: {
+  client: WebClient
+  channelId: string
+  threadTs: string
+}): Promise<boolean> {
+  if (!opts.channelId.startsWith('D')) return false
+
+  const state = await loadRoutedThreadStateFromDmRoot(opts.client, opts.channelId, opts.threadTs)
+  if (!state.routePayload || state.prompted) return false
+
+  const response = await opts.client.chat.postMessage({
+    channel: opts.channelId,
+    thread_ts: opts.threadTs,
+    text: [
+      'I can post this answer back to the original thread.',
+      'Reply `post it` in this DM thread and I will copy the latest successful answer back there.'
+    ].join('\n'),
+    metadata: {
+      event_type: POSTBACK_PROMPT_METADATA_TYPE,
+      event_payload: {
+        source_channel_id: state.routePayload.source_channel_id,
+        source_thread_ts: state.routePayload.source_thread_ts
+      }
+    }
+  } as Parameters<typeof opts.client.chat.postMessage>[0])
+  if (!response.ok) {
+    throw new Error(
+      `Failed to post routed DM postback prompt: ${response.error ?? 'unknown_error'}`
+    )
+  }
+  return true
+}
+
 function isChannelThreadReply(event: NormalizedSlackEvent): boolean {
   return !event.channel_id.startsWith('D') && event.slack.message_ts !== event.thread_ts
 }
@@ -187,19 +226,37 @@ async function loadRoutePayloadFromDmRoot(
   client: WebClient,
   event: NormalizedSlackEvent
 ): Promise<RoutedThreadPayload | null> {
-  const response = await client.conversations.replies({
-    channel: event.channel_id,
-    ts: event.thread_ts,
-    limit: 10
-  })
-  if (!response.ok || !Array.isArray(response.messages)) return null
+  const state = await loadRoutedThreadStateFromDmRoot(client, event.channel_id, event.thread_ts)
+  return state.routePayload
+}
 
+async function loadRoutedThreadStateFromDmRoot(
+  client: WebClient,
+  channelId: string,
+  threadTs: string
+): Promise<RoutedThreadState> {
+  const response = await client.conversations.replies({
+    channel: channelId,
+    ts: threadTs,
+    limit: 20
+  })
+  if (!response.ok || !Array.isArray(response.messages)) {
+    return { routePayload: null, prompted: false }
+  }
+
+  let routePayload: RoutedThreadPayload | null = null
+  let prompted = false
   for (const message of response.messages as SlackMessageWithMetadata[]) {
     const metadata = message.metadata
-    if (metadata?.event_type !== ROUTE_METADATA_TYPE) continue
-    return parseRoutePayload(metadata.event_payload)
+    if (metadata?.event_type === ROUTE_METADATA_TYPE) {
+      routePayload = parseRoutePayload(metadata.event_payload)
+      continue
+    }
+    if (metadata?.event_type === POSTBACK_PROMPT_METADATA_TYPE) {
+      prompted = true
+    }
   }
-  return null
+  return { routePayload, prompted }
 }
 
 function parseRoutePayload(value: unknown): RoutedThreadPayload | null {
@@ -289,7 +346,9 @@ function isPublishApproval(text: string): boolean {
     return true
   }
   return (
-    /\bpost\b/.test(normalized) && /\b(it|this|answer|results?|thread|there)\b/.test(normalized)
+    (/\bpost\b/.test(normalized) &&
+      /\b(it|this|answer|results?|thread|there|back|original)\b/.test(normalized)) ||
+    /\b(?:post|send|share|copy)\b.*\b(?:back|original|thread|there)\b/.test(normalized)
   )
 }
 

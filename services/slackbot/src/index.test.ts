@@ -305,6 +305,109 @@ describe('Slack event HTTP dedupe', () => {
     }
   })
 
+  it('prompts routed DM postback from final status after Codex closes the stream', async () => {
+    process.env.SLACK_BOT_TOKEN = 'xoxb-routed-dm-postback-test'
+    process.env.SLACKBOT_API_KEY = 'test-slackbot-api-key'
+    delete process.env.CENTAUR_API_KEY
+
+    const slackCalls: Array<{ path: string; body: Record<string, unknown> }> = []
+    const slackApi = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url)
+        const body = await slackApiBody(request)
+        slackCalls.push({ path: url.pathname, body })
+        if (url.pathname === '/api/auth.test') {
+          return Response.json({ ok: true, user_id: 'UBOT', bot_id: 'BBOT' })
+        }
+        if (url.pathname === '/api/assistant.threads.setStatus') {
+          return Response.json({ ok: true })
+        }
+        if (url.pathname === '/api/chat.startStream') {
+          return Response.json({ ok: true, channel: 'D123', ts: '1778885000.000000' })
+        }
+        if (url.pathname === '/api/chat.stopStream') {
+          return Response.json({ ok: true, channel: 'D123', ts: '1778885000.000000' })
+        }
+        if (url.pathname === '/api/conversations.replies') {
+          return Response.json({
+            ok: true,
+            messages: [
+              {
+                ts: '1778884000.000000',
+                metadata: {
+                  event_type: 'centaur_thread_dm_route',
+                  event_payload: {
+                    source_team_id: 'T123',
+                    source_channel_id: 'C123',
+                    source_thread_ts: '1778883000.000000',
+                    source_message_ts: '1778883001.000000',
+                    source_request_url: 'https://slack.com/archives/C123/p1778883001000000',
+                    source_thread_url: 'https://slack.com/archives/C123/p1778883000000000'
+                  }
+                }
+              }
+            ]
+          })
+        }
+        if (url.pathname === '/api/chat.postMessage') {
+          return Response.json({ ok: true, channel: 'D123', ts: '1778885001.000000' })
+        }
+        return Response.json({ ok: false, error: 'unexpected_slack_method' }, { status: 404 })
+      }
+    })
+    process.env.SLACK_API_URL = `http://127.0.0.1:${slackApi.port}/api/`
+
+    try {
+      const { app } = await import(`./index.ts?routed_dm_done=${Date.now()}`)
+      const opened = await app.request('/api/slack/agent-sessions', {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: JSON.stringify({
+          channel: 'D123',
+          parent_ts: '1778884000.000000',
+          recipient_team_id: 'T123',
+          recipient_user_id: 'U123',
+          title: 'Watch Agent'
+        })
+      })
+      expect(opened.status).toBe(200)
+      const { session_id: sessionId } = (await opened.json()) as { session_id: string }
+
+      const terminal = await app.request(`/api/slack/agent-sessions/${sessionId}/harness-event`, {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: JSON.stringify({ event: { type: 'turn.completed', result: 'Done.' } })
+      })
+      expect(terminal.status).toBe(200)
+      expect(await terminal.json()).toMatchObject({ ok: true, done: true })
+
+      const done = await app.request(`/api/slack/agent-sessions/${sessionId}/done`, {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: JSON.stringify({ status: 'completed' })
+      })
+      expect(done.status).toBe(200)
+
+      const prompts = slackCalls.filter(call => call.path === '/api/chat.postMessage')
+      expect(prompts).toHaveLength(1)
+      expect(prompts[0]?.body).toMatchObject({
+        channel: 'D123',
+        thread_ts: '1778884000.000000',
+        metadata: {
+          event_type: 'centaur_thread_postback_prompt',
+          event_payload: {
+            source_channel_id: 'C123',
+            source_thread_ts: '1778883000.000000'
+          }
+        }
+      })
+      expect(prompts[0]?.body.text).toContain('Reply `post it`')
+    } finally {
+      await slackApi.stop()
+    }
+  })
+
   it('acks duplicate Slack envelopes without scheduling duplicate processing', async () => {
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret'
     process.env.SLACK_EVENT_DEDUP_TTL_MS = '600000'
@@ -484,6 +587,13 @@ function signedJsonRequest(body: string, signingSecret: string): RequestInit {
       'x-slack-signature': signature
     },
     body
+  }
+}
+
+function apiHeaders(): Record<string, string> {
+  return {
+    authorization: `Bearer ${process.env.SLACKBOT_API_KEY}`,
+    'content-type': 'application/json'
   }
 }
 

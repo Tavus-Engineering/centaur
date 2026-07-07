@@ -16,7 +16,12 @@ import {
   spanAttributes,
   withSpan
 } from './otel'
-import { AgentSessionRenderer, withAgentSessionLock } from './slack/agent-session'
+import {
+  AgentSessionRenderer,
+  agentSessionTarget,
+  hasAgentSession,
+  withAgentSessionLock
+} from './slack/agent-session'
 import { authorizeSlackOrg } from './slack/authorization'
 import { CodexSessionRenderer, hasActiveCodexSession } from './slack/codex-session'
 import { EventDeduper, slackDedupKeys } from './slack/dedup'
@@ -28,6 +33,7 @@ import { markdownToStreamChunks } from './slack/render'
 import { verifySlackSignature } from './slack/signature'
 import {
   maybePublishApprovedDmResultToThread,
+  maybePromptRoutedDmPostback,
   routeThreadMentionToDm
 } from './slack/thread-routing'
 import { shouldAckWithReaction } from './slack/trivial-ack'
@@ -392,17 +398,27 @@ app.post('/api/slack/agent-sessions/:session_id/step', apiKeyMiddleware, async c
 })
 
 app.post('/api/slack/agent-sessions/:session_id/done', apiKeyMiddleware, async c => {
-  const body = await c.req.json<{ thread_id?: string }>()
+  const body = await c.req.json<{ thread_id?: string; status?: string }>()
   const { client } = await resolver.resolve({})
   try {
     const sessionId = c.req.param('session_id')
-    await withAgentSessionLock(sessionId, async () => {
-      if (hasActiveCodexSession(sessionId)) {
-        await new CodexSessionRenderer(client).done(sessionId, body.thread_id)
-      } else {
-        await new AgentSessionRenderer(client).done(sessionId)
-      }
-    })
+    const target = agentSessionTarget(sessionId)
+    if (hasActiveCodexSession(sessionId) || hasAgentSession(sessionId)) {
+      await withAgentSessionLock(sessionId, async () => {
+        if (hasActiveCodexSession(sessionId)) {
+          await new CodexSessionRenderer(client).done(sessionId, body.thread_id)
+        } else {
+          await new AgentSessionRenderer(client).done(sessionId)
+        }
+      })
+    }
+    if (body.status === 'completed' && target) {
+      await promptRoutedDmPostback({
+        client,
+        channelId: target.channel,
+        threadTs: target.parentTs
+      })
+    }
     return c.json({ ok: true })
   } catch (error) {
     return slackApiErrorResponse(c, error)
@@ -422,6 +438,22 @@ app.post('/api/slack/agent-sessions/:session_id/harness-event', apiKeyMiddleware
     return slackApiErrorResponse(c, error)
   }
 })
+
+async function promptRoutedDmPostback(opts: {
+  client: WebClient
+  channelId: string
+  threadTs: string
+}): Promise<void> {
+  try {
+    await maybePromptRoutedDmPostback(opts)
+  } catch (error) {
+    logWarn('slack_routed_dm_postback_prompt_failed', {
+      channel_id: opts.channelId,
+      thread_ts: opts.threadTs,
+      error: sanitizeLogValue(error)
+    })
+  }
+}
 
 app.post('/api/slack/assistant/status', apiKeyMiddleware, async c => {
   const body = await c.req.json<{
