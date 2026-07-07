@@ -66,6 +66,7 @@ class Input:
 def _build_prompt(failure: dict[str, Any]) -> str:
     """Investigation instructions for the Watch Agent, from the failure payload."""
     family = failure.get("family") or "a Tavus heartbeat"
+    conversation_id = failure.get("conversation_id")
     lines = [
         f"A `{family}` heartbeat just failed. Investigate the root cause and report "
         "back in this Slack thread.",
@@ -91,6 +92,29 @@ def _build_prompt(failure: dict[str, Any]) -> str:
         "",
         "Use the tools available to you (tavus-api, signoz, laminar) to correlate "
         "traces/logs around the failure, and the conversation id when present.",
+        "",
+        "Required SigNoz checklist before your final answer:",
+        "1. Confirm SigNoz is usable with `call signoz ready`.",
+        "2. Query realtime-replica logs around the failure. If a conversation id is "
+        "present, start with:",
+        (
+            "   `call signoz search_logs "
+            '\'{"service":"realtime-replica","searchText":"'
+            f"{conversation_id}"
+            '","timeRange":"12h","limit":200}\'`.'
+            if conversation_id
+            else "   `call signoz search_logs "
+            '\'{"service":"realtime-replica","timeRange":"12h",'
+            '"limit":200}\'`.'
+        ),
+        "3. Run targeted realtime-replica searches for startup transport/rate-limit "
+        "failures: `Too Many Requests`, `429`, `ConnectError`, `HTTP error`, "
+        "`TransportStep failed to boot`, and `livekit_ffi`.",
+        "4. If any query returns zero rows, say that explicitly and continue the "
+        "checklist instead of treating the first empty query as absence of evidence.",
+        "5. Do not conclude Cartesia/TTS, startup/shutdown handling, GPU queue, or "
+        "media delivery is the root cause until the realtime-replica transport and "
+        "rate-limit checks above are either cited or explicitly unavailable.",
         "",
         "Format your reply as:",
         "1. A first line `*TL;DR:* <one sentence: most likely cause + recommended "
