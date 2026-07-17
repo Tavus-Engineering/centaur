@@ -1,17 +1,89 @@
 {{- if .Values.repoCache.enabled }}
-{{- if not .Values.repoCache.repositories }}
-{{- fail "repoCache.repositories must contain at least one owner/repo entry when repoCache.enabled=true" }}
+{{- $overlaySources := include "centaur.overlaySources" . | fromJsonArray -}}
+{{- $repoCacheRepositories := list -}}
+{{- $repoCacheRepositoryVisibilities := dict -}}
+{{- $repoCacheRepositoryRefs := list -}}
+{{- $repoCacheRepositoryRefRepos := list -}}
+{{- range $repo, $ref := .Values.repoCache.repositoryRefs }}
+{{- $repoCacheRepositoryRefs = append $repoCacheRepositoryRefs (printf "%s=%s" $repo $ref) -}}
+{{- $repoCacheRepositoryRefRepos = append $repoCacheRepositoryRefRepos $repo -}}
 {{- end }}
+{{- range .Values.repoCache.repositories }}
+{{- if kindIs "string" . -}}
+{{- $repo := . -}}
+{{- if $repo -}}
+{{- $repoCacheRepositories = append $repoCacheRepositories $repo -}}
+{{- $_ := set $repoCacheRepositoryVisibilities $repo "private" -}}
+{{- end -}}
+{{- else -}}
+{{- $repo := get . "repo" | default "" -}}
+{{- if $repo -}}
+{{- $repoCacheRepositories = append $repoCacheRepositories $repo -}}
+{{- $_ := set $repoCacheRepositoryVisibilities $repo (include "centaur.repositoryVisibility" (get . "visibility")) -}}
+{{- $ref := get . "ref" | default "" -}}
+{{- if and $ref (not (has $repo $repoCacheRepositoryRefRepos)) -}}
+{{- $repoCacheRepositoryRefs = append $repoCacheRepositoryRefs (printf "%s=%s" $repo $ref) -}}
+{{- $repoCacheRepositoryRefRepos = append $repoCacheRepositoryRefRepos $repo -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+{{- range $source := $overlaySources }}
+{{- with (get $source "repo") }}
+{{- $repoCacheRepositories = append $repoCacheRepositories . -}}
+{{- $_ := set $repoCacheRepositoryVisibilities . (get $source "visibility" | default "private") -}}
+{{- end }}
+{{- end }}
+{{- $repoCacheRepositories = uniq $repoCacheRepositories -}}
+{{- if $repoCacheRepositories }}
+{{- $repoCacheHasGithubToken := or .Values.repoCache.githubToken.existingSecretName .Values.repoCache.githubToken.token -}}
 {{- $repoCacheImageRepository := default .Values.sandbox.image.repository .Values.repoCache.image.repository -}}
 {{- $repoCacheImageTag := default .Values.sandbox.image.tag .Values.repoCache.image.tag -}}
 {{- $repoCacheImagePullPolicy := default .Values.sandbox.image.pullPolicy .Values.repoCache.image.pullPolicy -}}
+{{- $repoCacheStorageType := include "centaur.repoCacheStorageType" . -}}
+{{- $repoCacheUsePvc := eq $repoCacheStorageType "persistentVolumeClaim" -}}
+{{- $repoCachePvcName := include "centaur.repoCachePvcName" . -}}
+{{- $repoCacheCreatePvc := and $repoCacheUsePvc .Values.repoCache.storage.persistentVolumeClaim.create (not .Values.repoCache.storage.persistentVolumeClaim.existingClaim) -}}
+{{- range $source := $overlaySources }}
+{{- $repo := get $source "repo" | default "" -}}
+{{- $ref := get $source "ref" | default "" -}}
+{{- if and $repo $ref (not (has $repo $repoCacheRepositoryRefRepos)) }}
+{{- $repoCacheRepositoryRefs = append $repoCacheRepositoryRefs (printf "%s=%s" $repo $ref) -}}
+{{- $repoCacheRepositoryRefRepos = append $repoCacheRepositoryRefRepos $repo -}}
+{{- end }}
+{{- end }}
+{{- $repoCacheRepositoryVisibilityEntries := list -}}
+{{- range $repo := $repoCacheRepositories }}
+{{- $repoCacheRepositoryVisibilityEntries = append $repoCacheRepositoryVisibilityEntries (printf "%s=%s" $repo (get $repoCacheRepositoryVisibilities $repo | default "private")) -}}
+{{- end }}
+{{- if $repoCacheCreatePvc }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $repoCachePvcName }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "repo-cache") | nindent 4 }}
+spec:
+  accessModes:
+{{ toYaml .Values.repoCache.storage.persistentVolumeClaim.accessModes | nindent 4 }}
+{{- with .Values.repoCache.storage.persistentVolumeClaim.storageClassName }}
+  storageClassName: {{ . | quote }}
+{{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.repoCache.storage.persistentVolumeClaim.size | quote }}
+---
+{{- end }}
 apiVersion: apps/v1
-kind: DaemonSet
+kind: {{ ternary "Deployment" "DaemonSet" $repoCacheUsePvc }}
 metadata:
   name: {{ include "centaur.componentName" (dict "root" . "component" "repo-cache") }}
   labels:
 {{ include "centaur.componentLabels" (dict "root" . "component" "repo-cache") | nindent 4 }}
 spec:
+{{- if $repoCacheUsePvc }}
+  replicas: 1
+{{- end }}
   selector:
     matchLabels:
 {{ include "centaur.componentSelectorLabels" (dict "root" . "component" "repo-cache") | nindent 6 }}
@@ -42,69 +114,14 @@ spec:
           image: {{ printf "%s:%s" $repoCacheImageRepository $repoCacheImageTag | quote }}
           imagePullPolicy: {{ $repoCacheImagePullPolicy }}
           command:
-            - /bin/bash
-            - -ec
-            - |
-              set -o pipefail
-              token_file=/github-token/token
-              if [ ! -s "$token_file" ]; then
-                echo "GitHub token file is missing or empty: $token_file" >&2
-                exit 1
-              fi
-
-              cat > /tmp/git-askpass <<'EOF'
-              #!/bin/sh
-              case "$1" in
-                *Username*) printf '%s\n' x-access-token ;;
-                *Password*) cat /github-token/token ;;
-                *) printf '\n' ;;
-              esac
-              EOF
-              chmod 0700 /tmp/git-askpass
-              export GIT_ASKPASS=/tmp/git-askpass
-              git config --global --add safe.directory '*'
-              git config --global init.defaultBranch main
-              umask 022
-
-              sync_repo() {
-                repo="$1"
-                repo_url="https://github.com/${repo}.git"
-                target="/cache/${repo}"
-                tmp="${target}.tmp.$$"
-
-                mkdir -p "$(dirname "$target")"
-                if git -C "$target" rev-parse --git-dir >/dev/null 2>&1; then
-                  echo "Updating $repo"
-                  git -C "$target" config gc.auto 0 || true
-                  git -C "$target" remote set-url origin "$repo_url" || git -C "$target" remote add origin "$repo_url"
-                  git -C "$target" -c gc.auto=0 fetch --prune --tags origin
-                  git -C "$target" remote set-head origin -a || true
-                  default_branch="$(git -C "$target" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
-                  if [ -z "$default_branch" ] || [ "$default_branch" = "(unknown)" ]; then
-                    default_branch=main
-                  fi
-                  git -C "$target" checkout -q -B "$default_branch" "origin/$default_branch"
-                  git -C "$target" clean -fd
-                else
-                  echo "Cloning $repo"
-                  rm -rf "$tmp" "$target"
-                  git clone --quiet "$repo_url" "$tmp"
-                  git -C "$tmp" config gc.auto 0
-                  mv "$tmp" "$target"
-                fi
-              }
-
-              while true; do
-                for repo in $REPOSITORIES; do
-                  if ! sync_repo "$repo"; then
-                    echo "Failed to sync $repo" >&2
-                  fi
-                done
-                sleep "$SYNC_INTERVAL_SECONDS"
-              done
+            - /usr/local/bin/repo-cache-sync
           env:
             - name: REPOSITORIES
-              value: {{ join " " .Values.repoCache.repositories | quote }}
+              value: {{ join " " $repoCacheRepositories | quote }}
+            - name: REPOSITORY_REFS
+              value: {{ join " " $repoCacheRepositoryRefs | quote }}
+            - name: REPOSITORY_VISIBILITIES
+              value: {{ join " " $repoCacheRepositoryVisibilityEntries | quote }}
             - name: SYNC_INTERVAL_SECONDS
               value: {{ .Values.repoCache.syncIntervalSeconds | quote }}
             - name: GIT_TERMINAL_PROMPT
@@ -112,14 +129,12 @@ spec:
           readinessProbe:
             exec:
               command:
-                - /bin/bash
-                - -ec
-                - |
-                  for repo in $REPOSITORIES; do
-                    git -C "/cache/$repo" rev-parse --git-dir >/dev/null 2>&1 || exit 1
-                  done
-            initialDelaySeconds: 10
-            periodSeconds: 30
+                - /usr/local/bin/repo-cache-sync
+                - --check-ready
+            initialDelaySeconds: {{ .Values.repoCache.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.repoCache.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.repoCache.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.repoCache.readinessProbe.failureThreshold }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -134,14 +149,22 @@ spec:
           volumeMounts:
             - name: repo-cache
               mountPath: /cache
+{{- if $repoCacheHasGithubToken }}
             - name: github-token
               mountPath: /github-token
               readOnly: true
+{{- end }}
       volumes:
         - name: repo-cache
+{{- if $repoCacheUsePvc }}
+          persistentVolumeClaim:
+            claimName: {{ $repoCachePvcName | quote }}
+{{- else }}
           hostPath:
             path: {{ .Values.repoCache.hostPath | quote }}
             type: DirectoryOrCreate
+{{- end }}
+{{- if $repoCacheHasGithubToken }}
         - name: github-token
           secret:
             secretName: {{ include "centaur.repoCacheGithubTokenSecretName" . }}
@@ -149,4 +172,6 @@ spec:
             items:
               - key: {{ .Values.repoCache.githubToken.secretKey | quote }}
                 path: token
+{{- end }}
+{{- end }}
 {{- end }}

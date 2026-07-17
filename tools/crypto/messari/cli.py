@@ -5,14 +5,35 @@ import json
 import typer
 from dotenv import load_dotenv
 from rich.console import Console
-
-from centaur_sdk import Table
+from rich.table import Table
 
 from .client import MessariClient
 
 load_dotenv()
 
 app = typer.Typer(name="messari", help="Messari CLI for crypto asset data and analytics")
+
+
+@app.command("health")
+def health():
+    """Assert messari connectivity and auth with a safe read-only check."""
+    from .client import _client
+
+    client = _client()
+    try:
+        details = client.list_assets(limit=1)
+        payload = {"ok": True, "tool": "messari", "error": None, "details": details}
+    except Exception as exc:
+        payload = {"ok": False, "tool": "messari", "error": str(exc), "details": {}}
+        print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+        raise typer.Exit(1) from exc
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+    print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+
+
 console = Console()
 
 
@@ -49,7 +70,9 @@ def assets(
     markdown: bool = typer.Option(False, "--markdown", "-m", help="Output as markdown table"),
 ):
     """List crypto assets."""
-    data = get_client().list_assets(limit=limit, fields=fields)
+    if fields:
+        console.print("[yellow]--fields is ignored by the current Messari metrics endpoint[/]")
+    data = get_client().list_assets(limit=limit)
 
     if json_output:
         print(json.dumps(data, indent=2))
@@ -331,7 +354,7 @@ def raw(
         print(json.dumps(data, indent=2))
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 if __name__ == "__main__":
