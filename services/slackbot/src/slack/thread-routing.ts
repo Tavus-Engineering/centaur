@@ -125,7 +125,7 @@ export async function maybePublishApprovedDmResultToThread(opts: {
     text: [
       `Posted from a private Watch Agent follow-up for <@${opts.event.user_id}>.`,
       '',
-      result.result_text
+      stripPostbackPromptQuestion(result.result_text)
     ].join('\n'),
     metadata: {
       event_type: RESULT_POSTED_METADATA_TYPE,
@@ -294,6 +294,15 @@ function stringField(payload: Record<string, unknown>, key: string): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+export function stripPostbackPromptQuestion(text: string): string {
+  // Older sandbox results (and models imitating thread history) end with the
+  // DM-only postback question; it must never reach the original public thread.
+  const stripped = text
+    .replace(/[\s_*>~`]*do you want me to post this answer if it succeeds\s*\??[\s_*~`]*$/i, '')
+    .trimEnd()
+  return stripped.length > 0 ? stripped : text.trim()
+}
+
 function routingInstructionPart(payload: RoutedThreadPayload): NormalizedTextPart {
   return {
     type: 'text',
@@ -301,7 +310,7 @@ function routingInstructionPart(payload: RoutedThreadPayload): NormalizedTextPar
       'Slack routing note: this Watch Agent request was moved from an existing Slack thread into this private DM thread to avoid spamming the original thread.',
       `Original request: ${payload.source_request_url}`,
       `Original top-level thread: ${payload.source_thread_url}`,
-      'Use the backfilled original thread history as context, keep the answer in this DM, and end your final answer with: "Do you want me to post this answer if it succeeds?"'
+      'Use the backfilled original thread history as context and keep the answer in this DM. Do not ask whether to post the answer back to the original thread; the DM flow prompts the user for that separately.'
     ].join('\n')
   }
 }

@@ -296,7 +296,8 @@ describe('Slack event HTTP dedupe', () => {
           })
         }
       })
-      expect(JSON.stringify(workflow?.input)).toContain(
+      expect(JSON.stringify(workflow?.input)).toContain('keep the answer in this DM')
+      expect(JSON.stringify(workflow?.input)).not.toContain(
         'Do you want me to post this answer if it succeeds?'
       )
     } finally {

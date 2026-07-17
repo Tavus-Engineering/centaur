@@ -4,7 +4,8 @@ import {
   maybePublishApprovedDmResultToThread,
   maybePromptRoutedDmPostback,
   routeThreadMentionToDm,
-  shouldRouteThreadMentionToDm
+  shouldRouteThreadMentionToDm,
+  stripPostbackPromptQuestion
 } from './thread-routing'
 import type { NormalizedSlackEvent } from './types'
 
@@ -38,10 +39,11 @@ describe('thread mention DM routing', () => {
       dm_channel_id: 'D123',
       dm_thread_ts: '1778884000.000000'
     })
-    expect(routed.parts[0]).toMatchObject({
-      type: 'text',
-      text: expect.stringContaining('Do you want me to post this answer if it succeeds?')
-    })
+    const instructionText = routed.parts[0]?.type === 'text' ? routed.parts[0].text : ''
+    expect(instructionText).toContain('keep the answer in this DM')
+    expect(instructionText.includes('Do you want me to post this answer if it succeeds?')).toBe(
+      false
+    )
     expect(reactionsAdd).toHaveBeenCalledWith({
       channel: 'C123',
       timestamp: '1778883001.000000',
@@ -150,6 +152,39 @@ describe('thread mention DM routing', () => {
         text: expect.stringContaining('Posted to the original thread:')
       })
     )
+  })
+
+  it('strips the DM-only postback question before posting back to the thread', async () => {
+    const postedTexts: string[] = []
+    const chatPostMessage = mock(async (args: { text?: string }) => {
+      if (typeof args?.text === 'string') postedTexts.push(args.text)
+      return {
+        ok: true,
+        channel: 'C123',
+        ts: '1778885000.000000'
+      }
+    })
+    const client = slackClient({
+      conversations: {
+        replies: mock(async () => ({
+          ok: true,
+          messages: [routedDmRootMessage()]
+        }))
+      },
+      chat: { postMessage: chatPostMessage }
+    })
+    const latestPostableResult = mock(async () => ({
+      execution_id: 'exe_123',
+      result_text: 'Final answer\n\n_Do you want me to post this answer if it succeeds?_'
+    }))
+    const event = dmApprovalEvent()
+
+    expect(
+      maybePublishApprovedDmResultToThread({ client, event, latestPostableResult })
+    ).resolves.toBe(true)
+
+    expect(postedTexts[0]).toContain('Final answer')
+    expect(postedTexts[0]).not.toContain('Do you want me to post this answer if it succeeds')
   })
 
   it('treats post back as DM result approval', async () => {
@@ -263,6 +298,30 @@ describe('thread mention DM routing', () => {
       })
     ).resolves.toBe(false)
     expect(chatPostMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('stripPostbackPromptQuestion', () => {
+  it('removes a trailing postback question regardless of casing or wrappers', () => {
+    expect(
+      stripPostbackPromptQuestion('All good.\n\ndo you want me to post this answer if it succeeds')
+    ).toBe('All good.')
+    expect(
+      stripPostbackPromptQuestion('All good. *Do you want me to post this answer if it succeeds?*')
+    ).toBe('All good.')
+  })
+
+  it('leaves text without the question untouched', () => {
+    expect(stripPostbackPromptQuestion('All good.')).toBe('All good.')
+    expect(stripPostbackPromptQuestion('Do you want me to post this answer? Yes.')).toBe(
+      'Do you want me to post this answer? Yes.'
+    )
+  })
+
+  it('keeps the original text when the question is the whole message', () => {
+    expect(stripPostbackPromptQuestion('Do you want me to post this answer if it succeeds?')).toBe(
+      'Do you want me to post this answer if it succeeds?'
+    )
   })
 })
 
