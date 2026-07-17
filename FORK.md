@@ -31,3 +31,4 @@ line in the PR that syncs it back.
 | 447565b9 | slackbot: prompt routed DM users to post successful results back to the original thread | [#21](https://github.com/Tavus-Engineering/centaur/pull/21) |
 | 5301a4f1 | slackbot: read full routed DM metadata payloads before posting approved results back | [#22](https://github.com/Tavus-Engineering/centaur/pull/22) |
 | 6df59617 | api: require heartbeat investigations to check realtime-replica SigNoz rate-limit evidence | [#23](https://github.com/Tavus-Engineering/centaur/pull/23) |
+| 866b8047 | slackbot: strip the DM-only "post this answer?" question from results posted back to public threads | [#24](https://github.com/Tavus-Engineering/centaur/pull/24) |
