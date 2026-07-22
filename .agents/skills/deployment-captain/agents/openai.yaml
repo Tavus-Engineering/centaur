@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deployment Captain"
+  short_description: "Safely prepare and supervise CVI and RQH releases"
+  default_prompt: "Use $deployment-captain to prepare a CVI or RQH release without starting it."
