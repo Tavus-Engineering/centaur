@@ -5,7 +5,6 @@ CENTAUR_RELEASE ?= centaur
 CENTAUR_CHART ?= contrib/chart
 CENTAUR_API_IMAGE_REPOSITORY ?= centaur-api-tavus
 CENTAUR_SANDBOX_IMAGE_REPOSITORY ?= centaur-agent-tavus
-CENTAUR_IRON_PROXY_IMAGE_REPOSITORY ?= centaur-iron-proxy-tavus
 CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY ?= centaur-slackbotv2-tavus
 CENTAUR_TOOLS_REPOSITORY ?= Tavus-Engineering/centaur
 CENTAUR_K3S_CTR ?= sudo k3s ctr
@@ -19,20 +18,16 @@ deploy:
 	FULL_SHA="$$(git rev-parse HEAD)"; \
 	API_IMAGE="$(CENTAUR_API_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	SANDBOX_IMAGE="$(CENTAUR_SANDBOX_IMAGE_REPOSITORY):fork-$${SHA}"; \
-	IRON_PROXY_IMAGE="$(CENTAUR_IRON_PROXY_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	SLACKBOTV2_IMAGE="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	echo "Building $${API_IMAGE}"; \
 	docker build -t "$${API_IMAGE}" -f services/api-rs/Dockerfile .; \
 	echo "Building $${SANDBOX_IMAGE}"; \
 	docker build --target sandbox -t "$${SANDBOX_IMAGE}" -f services/sandbox/Dockerfile .; \
-	echo "Building $${IRON_PROXY_IMAGE}"; \
-	docker build -t "$${IRON_PROXY_IMAGE}" -f services/iron-proxy/Dockerfile .; \
 	echo "Building $${SLACKBOTV2_IMAGE}"; \
 	docker build -t "$${SLACKBOTV2_IMAGE}" -f services/slackbotv2/Dockerfile .; \
 	echo "Importing images into k3s"; \
 	docker save "$${API_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
 	docker save "$${SANDBOX_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
-	docker save "$${IRON_PROXY_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
 	docker save "$${SLACKBOTV2_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
 	helm dependency update "$(CENTAUR_CHART)" >/dev/null; \
 	kubectl apply -f "$(CENTAUR_CHART)/charts/agent-sandbox/crds" >/dev/null; \
@@ -40,11 +35,8 @@ deploy:
 	  --set apiRs.image.repository="$(CENTAUR_API_IMAGE_REPOSITORY)" \
 	  --set apiRs.image.tag="fork-$${SHA}" \
 	  --set apiRs.image.pullPolicy=IfNotPresent \
-	  --set apiRs.ironProxy.mode=enabled \
+	  --set apiRs.ironProxy.mode=disabled \
 	  --set apiRs.syncInfraSecrets=false \
-	  --set ironProxy.image.repository="$(CENTAUR_IRON_PROXY_IMAGE_REPOSITORY)" \
-	  --set ironProxy.image.tag="fork-$${SHA}" \
-	  --set ironProxy.image.pullPolicy=IfNotPresent \
 	  --set sandbox.image.repository="$(CENTAUR_SANDBOX_IMAGE_REPOSITORY)" \
 	  --set sandbox.image.tag="fork-$${SHA}" \
 	  --set sandbox.image.pullPolicy=IfNotPresent \

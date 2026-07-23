@@ -143,6 +143,28 @@ spec:
         - protocol: TCP
           port: 443
 ---
+{{- if eq .Values.apiRs.ironProxy.mode "disabled" }}
+# Compatibility mode for deployments that intentionally run session sandboxes
+# without per-sandbox iron-proxy Pods. The dynamically rendered policy still
+# limits cluster access; this additive rule grants only direct outbound HTTPS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "centaur.fullname" . }}-session-sandbox-https
+  labels:
+{{ include "centaur.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      centaur.ai/component: session-sandbox
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
