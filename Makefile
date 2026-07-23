@@ -23,7 +23,7 @@ deploy:
 	docker save "$${API_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
 	docker save "$${SANDBOX_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
 	helm dependency update "$(CENTAUR_CHART)" >/dev/null; \
-	helm upgrade "$(CENTAUR_RELEASE)" "$(CENTAUR_CHART)" -n "$(CENTAUR_NAMESPACE)" --reuse-values \
+	helm upgrade "$(CENTAUR_RELEASE)" "$(CENTAUR_CHART)" -n "$(CENTAUR_NAMESPACE)" --reset-then-reuse-values \
 	  --set apiRs.image.repository="$(CENTAUR_API_IMAGE_REPOSITORY)" \
 	  --set apiRs.image.tag="fork-$${SHA}" \
 	  --set apiRs.image.pullPolicy=IfNotPresent \
