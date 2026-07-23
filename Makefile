@@ -6,6 +6,7 @@ CENTAUR_CHART ?= contrib/chart
 CENTAUR_API_IMAGE_REPOSITORY ?= centaur-api-tavus
 CENTAUR_SANDBOX_IMAGE_REPOSITORY ?= centaur-agent-tavus
 CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY ?= centaur-slackbotv2-tavus
+CENTAUR_TOOLS_REPOSITORY ?= Tavus-Engineering/centaur
 CENTAUR_K3S_CTR ?= sudo k3s ctr
 CENTAUR_API_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-api-rs
 
@@ -14,6 +15,7 @@ CENTAUR_API_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-api-rs
 deploy:
 	set -euo pipefail; \
 	SHA="$$(git rev-parse --short HEAD)"; \
+	FULL_SHA="$$(git rev-parse HEAD)"; \
 	API_IMAGE="$(CENTAUR_API_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	SANDBOX_IMAGE="$(CENTAUR_SANDBOX_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	SLACKBOTV2_IMAGE="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY):fork-$${SHA}"; \
@@ -39,6 +41,8 @@ deploy:
 	  --set sandbox.image.tag="fork-$${SHA}" \
 	  --set sandbox.image.pullPolicy=IfNotPresent \
 	  --set-json 'sandbox.extraEnv.CENTAUR_HARNESS_CONFIG_DIR=null' \
+	  --set toolServer.repo="$(CENTAUR_TOOLS_REPOSITORY)" \
+	  --set toolServer.ref="$${FULL_SHA}" \
 	  --set slackbotv2.image.repository="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY)" \
 	  --set slackbotv2.image.tag="fork-$${SHA}" \
 	  --set slackbotv2.image.pullPolicy=IfNotPresent; \
