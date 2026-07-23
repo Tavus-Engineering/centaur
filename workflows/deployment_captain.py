@@ -1,4 +1,4 @@
-"""Durable CVI/RQH release supervision with exact GitHub identifiers."""
+"""Durable Tavus release supervision with exact GitHub identifiers."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ class Input:
     confirmation: str
     slack_channel: str
     slack_thread_ts: str
+    target: str = "production"
 
 
 async def _tool(
@@ -292,8 +293,20 @@ async def _poll_production(
 
 async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
     service = inp.service.strip().lower()
-    if service not in {"cvi", "rqh"}:
-        raise RuntimeError("service must be cvi or rqh")
+    if service not in {"cvi", "rqh", "tavus-api"}:
+        raise RuntimeError("service must be cvi, rqh, or tavus-api")
+    target_aliases = {
+        "canary": "staging",
+        "prod": "production",
+        "production": "production",
+        "stage": "staging",
+        "staging": "staging",
+    }
+    target = target_aliases.get(inp.target.strip().lower())
+    if target is None:
+        raise RuntimeError("target must be staging or production")
+    if service == "tavus-api" and target != "staging":
+        raise RuntimeError("Tavus API deployment-captain support is staging-only.")
 
     started = await ctx.step(
         "start-exact-release",
@@ -305,6 +318,7 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
                 "pr_number": inp.pr_number,
                 "head_sha": inp.head_sha,
                 "confirmation": inp.confirmation,
+                "target": target,
             },
         ),
     )
@@ -316,7 +330,8 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         inp,
         "notify-release-started",
         f"Started {service.upper()} {started.get('version')} from PR #{inp.pr_number}. "
-        f"I am supervising merge commit `{merge_commit_sha}` and will not approve production.",
+        f"I am supervising merge commit `{merge_commit_sha}` through {target}. "
+        "I will not approve production.",
     )
 
     discovered = await _wait_for_release_run(ctx, inp, merge_commit_sha)
@@ -337,54 +352,87 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         until_gates_ready=True,
         step_prefix=f"{service}-production-gates",
     )
-    if gates.get("status") == "completed":
+    staging_announcement: Any = None
+    staging_ready = gates.get("production_gates_ready") or (
+        gates.get("status") == "completed" and gates.get("conclusion") == "success"
+    )
+    if not staging_ready:
         final = gates
     else:
-        staging_announcement = await _announce_release(
-            ctx,
-            inp,
-            transition="staging-ready",
-            version=str(started.get("version") or ""),
-            run_id=run_id,
-            run_url=run_url,
-            merge_commit_sha=merge_commit_sha,
-        )
+        if service in {"cvi", "rqh"}:
+            staging_announcement = await _announce_release(
+                ctx,
+                inp,
+                transition="staging-ready",
+                version=str(started.get("version") or ""),
+                run_id=run_id,
+                run_url=run_url,
+                merge_commit_sha=merge_commit_sha,
+            )
         pending_names = [
             str(item.get("name"))
             for item in gates.get("pending_required_environments", [])
             if item.get("name")
         ]
         gate_summary = ", ".join(pending_names) or "the existing production gates"
+        if pending_names:
+            ready_message = (
+                f"{service.upper()} run {run_id} is healthy in staging and ready at "
+                f"{gate_summary}: {run_url}."
+            )
+        else:
+            ready_message = (
+                f"{service.upper()} run {run_id} completed its staging deployment "
+                f"successfully: {run_url}."
+            )
+        if target == "production" and pending_names:
+            ready_message += " An eligible human must approve in GitHub."
+        elif target == "staging":
+            ready_message += " Production was not requested."
         await _notify(
             ctx,
             inp,
-            f"notify-{service}-production-ready",
-            f"{service.upper()} run {run_id} is ready at {gate_summary}: {run_url}. "
-            "An eligible human must approve in GitHub.",
+            f"notify-{service}-staging-ready",
+            ready_message,
         )
-        final = await _poll_production(
-            ctx,
-            inp,
-            merge_commit_sha,
-            run_id,
-            run_url,
-            str(started.get("version") or ""),
-            staging_announcement,
-            pending_names,
-            step_prefix=f"{service}-release",
-        )
+
+        if target == "staging" or gates.get("status") == "completed":
+            final = gates
+        else:
+            final = await _poll_production(
+                ctx,
+                inp,
+                merge_commit_sha,
+                run_id,
+                run_url,
+                str(started.get("version") or ""),
+                staging_announcement,
+                pending_names,
+                step_prefix=f"{service}-release",
+            )
 
     await _notify(
         ctx,
         inp,
         f"notify-{service}-finished",
-        f"{service.upper()} run {run_id} finished with `{final.get('conclusion')}`: {run_url}",
+        (
+            f"{service.upper()} run {run_id} reached healthy staging: {run_url}"
+            if target == "staging" and staging_ready
+            else f"{service.upper()} run {run_id} finished with "
+            f"`{final.get('conclusion')}`: {run_url}"
+        ),
     )
     return {
         "service": service,
         "version": started.get("version"),
         "run_id": run_id,
         "run_url": run_url,
-        "conclusion": final.get("conclusion"),
-        "production_approval": "human",
+        "target": target,
+        "staging_ready": bool(staging_ready),
+        "conclusion": (
+            "staging-ready"
+            if target == "staging" and staging_ready
+            else final.get("conclusion")
+        ),
+        "production_approval": "human" if target == "production" else "not-requested",
     }

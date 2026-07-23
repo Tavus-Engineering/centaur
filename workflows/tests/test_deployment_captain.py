@@ -94,9 +94,7 @@ def test_cvi_workflow_uses_existing_provider_gates_without_facades():
     assert result["conclusion"] == "success"
     assert result["production_approval"] == "human"
     assert ctx.announcements == ["staging-ready", "production-promotion"]
-    assert any(
-        "promote-to-prod-cerebrium" in message for message in ctx.notifications
-    )
+    assert any("promote-to-prod-cerebrium" in message for message in ctx.notifications)
     assert any("approve in GitHub" in message for message in ctx.notifications)
 
 
@@ -114,10 +112,74 @@ def test_rqh_workflow_announces_manual_production_gate():
     result = asyncio.run(deployment_captain.handler(inp, ctx))
 
     assert result["conclusion"] == "success"
-    assert any(
-        "manual-approval" in message for message in ctx.notifications
-    )
+    assert any("manual-approval" in message for message in ctx.notifications)
     assert ctx.announcements == ["staging-ready", "production-promotion"]
+
+
+def test_explicit_rqh_staging_target_stops_at_the_human_production_gate():
+    ctx = FakeContext()
+    inp = deployment_captain.Input(
+        service="rqh",
+        pr_number=10,
+        head_sha="a" * 40,
+        confirmation="deploy",
+        slack_channel="C123",
+        slack_thread_ts="1234.5",
+        target="stage",
+    )
+
+    result = asyncio.run(deployment_captain.handler(inp, ctx))
+
+    assert result["target"] == "staging"
+    assert result["conclusion"] == "staging-ready"
+    assert result["production_approval"] == "not-requested"
+    assert ctx.release_status_calls == 2
+    assert ctx.announcements == ["staging-ready"]
+    assert any(
+        "Production was not requested" in message for message in ctx.notifications
+    )
+
+
+def test_tavus_api_stage_completes_without_a_production_gate_or_release_skill():
+    class TavusApiContext(FakeContext):
+        async def call_tool(self, tool, method, args):
+            if method != "release_run_status":
+                return await super().call_tool(tool, method, args)
+
+            self.release_status_calls += 1
+            base = {
+                "found": True,
+                "run_id": 701,
+                "url": "https://github.test/run/701",
+                "jobs": [],
+                "production_gates_ready": False,
+                "pending_required_environments": [],
+            }
+            if self.release_status_calls == 1:
+                return {**base, "status": "in_progress", "conclusion": None}
+            return {**base, "status": "completed", "conclusion": "success"}
+
+    ctx = TavusApiContext()
+    inp = deployment_captain.Input(
+        service="tavus-api",
+        pr_number=10,
+        head_sha="a" * 40,
+        confirmation="deploy",
+        slack_channel="C123",
+        slack_thread_ts="1234.5",
+        target="staging",
+    )
+
+    result = asyncio.run(deployment_captain.handler(inp, ctx))
+
+    assert result["service"] == "tavus-api"
+    assert result["target"] == "staging"
+    assert result["conclusion"] == "staging-ready"
+    assert result["production_approval"] == "not-requested"
+    assert ctx.announcements == []
+    assert any(
+        "completed its staging deployment" in message for message in ctx.notifications
+    )
 
 
 def test_workflow_holds_failed_existing_run_then_notices_same_run_retry():

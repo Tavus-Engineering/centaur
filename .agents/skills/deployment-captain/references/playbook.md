@@ -1,4 +1,4 @@
-# CVI and RQH release policy
+# Tavus release policy
 
 Canonical handbook: <https://docs.superhuman.com/d/Engineering-and-Research_dn31gYMNRyD/CVI-RQH-Deployment-Playbook_sutEjOom#_lupA-OPv>
 
@@ -11,8 +11,8 @@ Change owners remain responsible for testing on main/staging and must
 proactively communicate holds, migrations, and deployment-order constraints.
 
 Watch Agent operates the existing Release Please and GitHub Actions flow. No
-RQH or realtime-replica deployment facade, traffic workflow, failure-drill
-hook, or standalone rollback workflow is required.
+Tavus API, RQH, or realtime-replica deployment facade, traffic workflow,
+failure-drill hook, or standalone rollback workflow is required.
 
 ## Cadence and timing
 
@@ -24,6 +24,10 @@ hook, or standalone rollback workflow is required.
   be active per repository and a new Release Please PR must exist.
 - RQH normally takes about 15 minutes. CVI can take hours; begin at least six
   hours before the captain will be offline.
+- Tavus API merges to `main` run
+  `build-test-deploy-staging-region.yml`, which deploys `Platform-API-stg`.
+  Production uses a separate `releases/**` workflow and is outside the current
+  deployment-captain automation.
 
 ## Release communication
 
@@ -55,3 +59,7 @@ environments so an eligible human can approve in GitHub. The existing
 repository workflows own their rollout and rollback jobs; Watch Agent supervises
 the exact run and reports failures without introducing a parallel control
 plane.
+
+Tavus API has no production gate in its staging workflow. Watch Agent considers
+the staging target ready only when the exact `main`-push workflow run completes
+successfully.

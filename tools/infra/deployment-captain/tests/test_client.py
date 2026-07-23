@@ -21,7 +21,13 @@ def _response(payload, status_code=200):
     return httpx.Response(status_code, json=payload)
 
 
-def _github_handler(*, active_run: bool):
+def _github_handler(*, active_run: bool, service: str = "cvi"):
+    workflow = {
+        "cvi": "deploy-cvi.yml",
+        "rqh": "build-test-deploy-staging-prod-region.yml",
+        "tavus-api": "build-test-deploy-staging-region.yml",
+    }[service]
+
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.endswith("/pulls"):
@@ -38,7 +44,7 @@ def _github_handler(*, active_run: bool):
                     }
                 ]
             )
-        if path.endswith("/actions/workflows/deploy-cvi.yml/runs"):
+        if path.endswith(f"/actions/workflows/{workflow}/runs"):
             assert request.method == "GET"
             runs = (
                 [
@@ -95,7 +101,7 @@ def _github_handler(*, active_run: bool):
             assert request.method == "PUT"
             assert json.loads(request.content) == {
                 "sha": "a" * 40,
-                "merge_method": "squash",
+                "merge_method": "merge" if service == "tavus-api" else "squash",
             }
             return _response(
                 {
@@ -121,12 +127,79 @@ def test_prepare_is_read_only_and_blocks_stale_waiting_run():
     assert "announcement" not in plan
 
 
+def test_sandbox_github_placeholder_is_allowed_for_proxy_injection(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    with DeploymentCaptainClient() as client:
+        assert client._github_token() == "GITHUB_TOKEN"
+
+
 def test_prepare_ready_when_checks_clean_and_no_active_run():
     transport = httpx.MockTransport(_github_handler(active_run=False))
     with DeploymentCaptainClient(token="token", transport=transport) as client:
         plan = client.prepare_release("cvi")
     assert plan["ready_to_start"] is True
     assert plan["blockers"] == []
+
+
+def test_tavus_api_stage_uses_existing_main_staging_workflow():
+    transport = httpx.MockTransport(_github_handler(active_run=False, service="tavus-api"))
+    with DeploymentCaptainClient(token="token", transport=transport) as client:
+        plan = client.prepare_release("Tavus API", "stage")
+        result = client.start_release(
+            "api",
+            10,
+            "a" * 40,
+            "deploy",
+            target="staging",
+        )
+
+    assert plan["service"] == "tavus-api"
+    assert plan["target"] == "staging"
+    assert plan["repository"] == "Tavus-Engineering/tavus-api"
+    assert result["service"] == "tavus-api"
+    assert result["target"] == "staging"
+    assert result["deployment_workflow"] == "build-test-deploy-staging-region.yml"
+
+
+def test_tavus_api_production_is_rejected():
+    with (
+        DeploymentCaptainClient(token="token") as client,
+        pytest.raises(RuntimeError, match="staging-only"),
+    ):
+        client.prepare_release("tavus-api", "production")
+
+
+def test_prepare_requests_pr_clarification_when_release_candidates_are_ambiguous():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/pulls"):
+            return _response(
+                [
+                    {
+                        "number": number,
+                        "title": f"chore(main): release 3.4.{number}",
+                        "html_url": f"https://github.test/pr/{number}",
+                        "head": {
+                            "ref": "release-please--branches--main",
+                            "sha": str(number) * 40,
+                        },
+                    }
+                    for number in (10, 11)
+                ]
+            )
+        if path.endswith("/actions/workflows/deploy-cvi.yml/runs"):
+            return _response({"workflow_runs": []})
+        raise AssertionError(f"unexpected request: {request.method} {path}")
+
+    transport = httpx.MockTransport(handler)
+    with DeploymentCaptainClient(token="token", transport=transport) as client:
+        plan = client.prepare_release("cvi", "staging")
+
+    assert plan["ready_to_start"] is False
+    assert plan["needs_pr_clarification"] is True
+    assert [item["number"] for item in plan["release_pull_requests"]] == [10, 11]
 
 
 def test_start_revalidates_exact_release_and_needs_only_deploy_confirmation():
@@ -200,9 +273,11 @@ def test_launch_payload_has_short_confirmation_and_no_acknowledgement():
 
     assert result["launched"] is True
     assert captured["input"]["confirmation"] == "deploy"
+    assert captured["input"]["target"] == "production"
     assert "acknowledgement_url" not in captured["input"]
     assert set(captured["input"]) == {
         "service",
+        "target",
         "pr_number",
         "head_sha",
         "confirmation",

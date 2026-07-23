@@ -1,4 +1,4 @@
-"""CLI for guarded CVI and RQH deployment orchestration."""
+"""CLI for guarded Tavus deployment orchestration."""
 
 # ruff: noqa: E402
 
@@ -13,7 +13,10 @@ from rich.console import Console
 
 from .client import DeploymentCaptainClient
 
-app = typer.Typer(name="deployment-captain", help="Prepare and supervise CVI/RQH releases")
+app = typer.Typer(
+    name="deployment-captain",
+    help="Prepare and supervise CVI, RQH, and Tavus API releases",
+)
 console = Console()
 
 
@@ -26,17 +29,20 @@ def _print(data: object, json_output: bool) -> None:
 
 @app.command()
 def prepare(
-    service: str = typer.Argument(..., help="cvi or rqh"),
+    service: str = typer.Argument(..., help="cvi, rqh, or tavus-api"),
+    target: str = typer.Option(..., "--target", help="staging or production"),
+    pr_number: int | None = typer.Option(None, "--pr", help="Resolve one ambiguous release PR"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON"),
 ) -> None:
     """Prepare a read-only release plan without starting anything."""
     with DeploymentCaptainClient() as client:
-        _print(client.prepare_release(service), json_output)
+        _print(client.prepare_release(service, target, pr_number), json_output)
 
 
 @app.command()
 def launch(
-    service: str = typer.Argument(..., help="cvi or rqh"),
+    service: str = typer.Argument(..., help="cvi, rqh, or tavus-api"),
+    target: str = typer.Option(..., "--target", help="staging or production"),
     pr_number: int = typer.Option(..., "--pr"),
     head_sha: str = typer.Option(..., "--head-sha"),
     confirmation: str = typer.Option(..., "--confirmation"),
@@ -44,7 +50,7 @@ def launch(
     slack_thread_ts: str = typer.Option(..., "--slack-thread-ts"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON"),
 ) -> None:
-    """Launch the durable workflow after the user repeats the exact confirmation."""
+    """Launch after an explicit command or confirmation authorizes this exact release."""
     with DeploymentCaptainClient() as client:
         _print(
             client.launch_release(
@@ -54,6 +60,7 @@ def launch(
                 confirmation,
                 slack_channel,
                 slack_thread_ts,
+                target,
             ),
             json_output,
         )
@@ -61,7 +68,7 @@ def launch(
 
 @app.command()
 def status(
-    service: str = typer.Argument(..., help="cvi or rqh"),
+    service: str = typer.Argument(..., help="cvi, rqh, or tavus-api"),
     merge_commit_sha: str = typer.Option(..., "--merge-sha"),
     run_id: int | None = typer.Option(None, "--run-id"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON"),
@@ -73,7 +80,7 @@ def status(
 
 @app.command("cancel")
 def cancel_run(
-    service: str = typer.Argument(..., help="cvi or rqh"),
+    service: str = typer.Argument(..., help="cvi, rqh, or tavus-api"),
     run_id: int = typer.Option(..., "--run-id"),
     confirmation: str = typer.Option(..., "--confirmation"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON"),
@@ -85,7 +92,7 @@ def cancel_run(
 
 @app.command("rerun-failed")
 def rerun_failed(
-    service: str = typer.Argument(..., help="cvi or rqh"),
+    service: str = typer.Argument(..., help="cvi, rqh, or tavus-api"),
     run_id: int = typer.Option(..., "--run-id"),
     head_sha: str = typer.Option(..., "--head-sha"),
     confirmation: str = typer.Option(..., "--confirmation"),

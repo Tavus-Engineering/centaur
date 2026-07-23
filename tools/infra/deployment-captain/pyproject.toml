@@ -1,6 +1,6 @@
 [project]
 name = "deployment-captain"
-description = "Guarded CVI and RQH release orchestration through GitHub"
+description = "Guarded CVI, RQH, and Tavus API release orchestration through GitHub"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [

@@ -1,30 +1,64 @@
 ---
 name: deployment-captain
-description: Prepare, start, supervise, rerun, or cancel Tavus CVI and RQH production releases. Use when a user asks Watch Agent to deploy CVI/realtime-replica or RQH/request-handler, check a release, handle existing GitHub production gates, or perform the deployment-captain handbook duties.
+description: Prepare, start, supervise, rerun, or cancel Tavus CVI, RQH, and Tavus API releases. Use when a user asks Watch Agent to deploy CVI/realtime-replica, RQH/request-handler, or Tavus API to staging or production; check a release; handle existing GitHub production gates; or perform the deployment-captain handbook duties.
 ---
 
 # Deployment Captain
 
 Use the `deployment-captain` CLI for release PR and exact-run operations. It
 operates the existing repository-owned GitHub workflows; it does not require
-deployment-facade or rollback-facade changes in RQH or realtime-replica.
+deployment-facade or rollback-facade changes in Tavus API, RQH, or
+realtime-replica.
 
 Read [references/playbook.md](references/playbook.md) before the first operation
 in a thread.
 
+## Understand the request
+
+Resolve both a service and a destination from the current Slack thread:
+
+- `CVI` or `realtime-replica` -> `cvi`
+- `RQH` or `request-handler` -> `rqh`
+- `Tavus API`, `tavus-api`, or `API` -> `tavus-api`
+- `stage`, `staging`, or `canary` -> `staging`
+- `prod` or `production` -> `production`
+
+If either value is missing or genuinely ambiguous, ask one concise question in
+the same thread and stop. Examples: `Which service: CVI, RQH, or Tavus API?` or
+`Staging or production?` Do not dump a command template or ask for identifiers
+Watch Agent can discover from GitHub.
+
+Tavus API support is staging-only. If production is requested for Tavus API,
+state that limitation and ask whether the user wants staging instead.
+
+An unambiguous imperative such as `deploy RQH to stage` or
+`deploy tavus-api to staging` is authorization to prepare and launch that
+staging deployment in the same turn. Do not require a second confirmation. A
+bare `deploy` remains valid only when Watch Agent's immediately preceding
+message prepared one exact service, destination, PR, and full head SHA.
+
 ## Prepare
 
-Treat any initial “deploy CVI/RQH” request as preparation unless Watch Agent
-already prepared the current exact PR and full head SHA in the same thread and
-the user's new message is exactly `deploy`.
+1. Run:
 
-1. Run `deployment-captain prepare <cvi|rqh> --json`.
+   ```bash
+   deployment-captain prepare <cvi|rqh|tavus-api> \
+     --target <staging|production> \
+     --json
+   ```
+
+   If GitHub returns multiple Release Please candidates, list them and ask
+   which PR in the same thread. After the user chooses, prepare again with
+   `--pr <number>`.
 2. Report every blocker, including stale `waiting` runs. Never select “latest.”
    If `ready_to_start` is false, resolve the blockers first and prepare again.
 3. Report the exact service, version, PR, full head SHA, checks, and known
    blockers. Do not post a pre-deployment coordination message, collect
    acknowledgements, poll authors, or wait ten minutes.
-4. Tell the user: `Reply deploy to start this exact release.`
+4. For an explicit, unambiguous deployment command, continue directly to
+   **Start**. For a read-only request such as `prepare RQH staging`, stop after
+   the plan. If the user has not yet authorized deployment, ask:
+   `Deploy this exact release to <destination>?`
 
 Preparation is read-only. Do not launch the durable workflow yet.
 
@@ -32,16 +66,18 @@ Preparation is read-only. Do not launch the durable workflow yet.
 
 Start only when all of the following are true in the current Slack thread:
 
-- Watch Agent prepared the exact service, release PR, and full head SHA in its
-  immediately preceding release plan.
-- The user's new message is exactly `deploy`.
+- The user gave an unambiguous imperative deployment request, or replied to
+  Watch Agent's immediately preceding exact release plan with `deploy`.
+- Watch Agent prepared the exact service, destination, release PR, and full head
+  SHA in the current turn or immediately preceding release plan.
 - The prepared PR number and full head SHA still match.
 - `ready_to_start` is true.
 
 Then run:
 
 ```bash
-deployment-captain launch <cvi|rqh> \
+deployment-captain launch <cvi|rqh|tavus-api> \
+  --target <staging|production> \
   --pr <number> \
   --head-sha <full-sha> \
   --confirmation deploy \
@@ -50,8 +86,11 @@ deployment-captain launch <cvi|rqh> \
   --json
 ```
 
-The durable workflow binds the release PR, merge SHA, and Actions run ID, then
-supervises that exact existing workflow. The repository workflow owns builds,
+The durable workflow binds the Release Please PR, merge SHA, and Actions run ID,
+then supervises that exact existing workflow. For a staging target it stops
+after staging/canary is healthy and does not request production. For a
+production target it continues watching while an eligible human consumes the
+existing GitHub production gate. The repository workflow owns builds,
 staging/canary rollout, production promotion, and rollback jobs. Watch Agent
 does not change AWS traffic or dispatch a separate rollback workflow.
 
@@ -62,8 +101,9 @@ and must never deploy, approve, merge, change traffic, rerun, or roll back.
 
 RQH waits at `Manual Approval for Production`. CVI reports each existing
 provider promotion gate as it becomes available; those provider paths are
-intentionally independent. An eligible human approves in GitHub; Watch Agent
-never consumes a production gate.
+intentionally independent. Tavus API's existing `main` workflow deploys only
+the staging stack. An eligible human approves CVI/RQH production in GitHub;
+Watch Agent never consumes a production gate.
 
 ## Supervise
 

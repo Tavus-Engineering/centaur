@@ -1,4 +1,4 @@
-"""Guarded GitHub orchestration for Tavus CVI and RQH releases."""
+"""Guarded GitHub orchestration for Tavus staging and production releases."""
 
 from __future__ import annotations
 
@@ -31,6 +31,8 @@ class ServiceConfig:
     deployment_workflow: str
     release_branch_prefix: str
     approval_environments: frozenset[str]
+    supports_production: bool
+    merge_method: str
 
 
 _SERVICES = {
@@ -41,6 +43,8 @@ _SERVICES = {
         deployment_workflow="deploy-cvi.yml",
         release_branch_prefix="release-please--branches--main",
         approval_environments=frozenset(_CVI_APPROVAL_ENVIRONMENTS),
+        supports_production=True,
+        merge_method="squash",
     ),
     "rqh": ServiceConfig(
         key="rqh",
@@ -49,15 +53,55 @@ _SERVICES = {
         deployment_workflow="build-test-deploy-staging-prod-region.yml",
         release_branch_prefix="release-please--branches--main",
         approval_environments=frozenset(_RQH_APPROVAL_ENVIRONMENTS),
+        supports_production=True,
+        merge_method="squash",
     ),
+    "tavus-api": ServiceConfig(
+        key="tavus-api",
+        display_name="Tavus API",
+        repository="Tavus-Engineering/tavus-api",
+        deployment_workflow="build-test-deploy-staging-region.yml",
+        release_branch_prefix="release-please--branches--main",
+        approval_environments=frozenset(),
+        supports_production=False,
+        merge_method="merge",
+    ),
+}
+
+_SERVICE_ALIASES = {
+    "api": "tavus-api",
+    "cvi": "cvi",
+    "realtime-replica": "cvi",
+    "request-handler": "rqh",
+    "rqh": "rqh",
+    "tavus-api": "tavus-api",
+}
+
+_TARGET_ALIASES = {
+    "canary": "staging",
+    "prod": "production",
+    "production": "production",
+    "stage": "staging",
+    "staging": "staging",
 }
 
 
 def _service(service: str) -> ServiceConfig:
-    normalized = (service or "").strip().lower()
-    if normalized not in _SERVICES:
-        raise RuntimeError("service must be one of: cvi, rqh")
-    return _SERVICES[normalized]
+    normalized = re.sub(r"[\s_]+", "-", (service or "").strip().lower())
+    key = _SERVICE_ALIASES.get(normalized)
+    if key is None:
+        raise RuntimeError("service must be one of: cvi, rqh, tavus-api")
+    return _SERVICES[key]
+
+
+def _target(config: ServiceConfig, target: str) -> str:
+    normalized = re.sub(r"[\s_]+", "-", (target or "").strip().lower())
+    selected = _TARGET_ALIASES.get(normalized)
+    if selected is None:
+        raise RuntimeError("target must be staging or production")
+    if selected == "production" and not config.supports_production:
+        raise RuntimeError(f"{config.display_name} deployment-captain support is staging-only.")
+    return selected
 
 
 def _confirmation() -> str:
@@ -73,7 +117,7 @@ def _rerun_confirmation(config: ServiceConfig, run_id: int, head_sha: str) -> st
 
 
 class DeploymentCaptainClient:
-    """Release operations constrained to CVI and RQH repositories and workflows."""
+    """Release operations constrained to configured repositories and workflows."""
 
     def __init__(
         self,
@@ -88,7 +132,7 @@ class DeploymentCaptainClient:
 
     def _github_token(self) -> str:
         token = (self._token or secret("GITHUB_TOKEN", "")).strip()
-        if not token or token == "GITHUB_TOKEN":
+        if not token:
             raise RuntimeError("GITHUB_TOKEN is required.")
         return token
 
@@ -205,25 +249,48 @@ class DeploymentCaptainClient:
             if isinstance(reviews, list) and isinstance(review, dict)
         ]
 
-    def prepare_release(self, service: str) -> dict[str, Any]:
+    def prepare_release(
+        self,
+        service: str,
+        target: str = "production",
+        pr_number: int | None = None,
+    ) -> dict[str, Any]:
         """Build a read-only release plan. This never starts or changes a deployment."""
         config = _service(service)
+        selected_target = _target(config, target)
         releases = self._release_pull_requests(config)
         active_runs = self._active_runs(config)
-        if len(releases) != 1:
+        candidates = (
+            [pull for pull in releases if int(pull.get("number") or 0) == pr_number]
+            if pr_number is not None
+            else releases
+        )
+        if len(candidates) != 1:
             return {
                 "service": config.key,
+                "target": selected_target,
                 "ready_to_start": False,
                 "blockers": [
-                    f"Expected exactly one open release-please PR; found {len(releases)}."
+                    (
+                        f"Release Please PR #{pr_number} is not an open candidate."
+                        if pr_number is not None
+                        else f"Expected exactly one open release-please PR; found {len(releases)}."
+                    )
                 ],
+                "needs_pr_clarification": pr_number is None and len(releases) > 1,
                 "active_deployment_runs": active_runs,
                 "release_pull_requests": [
-                    {"number": pull.get("number"), "title": pull.get("title")} for pull in releases
+                    {
+                        "number": pull.get("number"),
+                        "title": pull.get("title"),
+                        "head_sha": (pull.get("head") or {}).get("sha"),
+                        "url": pull.get("html_url"),
+                    }
+                    for pull in releases
                 ],
             }
 
-        candidate = releases[0]
+        candidate = candidates[0]
         pr_number = int(candidate["number"])
         pull = self._github("GET", self._repo(config, f"/pulls/{pr_number}"))
         title_match = _RELEASE_TITLE.fullmatch(str(pull.get("title") or ""))
@@ -253,6 +320,7 @@ class DeploymentCaptainClient:
 
         return {
             "service": config.key,
+            "target": selected_target,
             "repository": config.repository,
             "version": version,
             "release_pr": {
@@ -270,9 +338,17 @@ class DeploymentCaptainClient:
             "confirmation": _confirmation(),
             "notes": [
                 "No pre-deployment acknowledgement or polling window is required.",
-                "Starting merges this exact PR and triggers the repository deployment workflow.",
+                (
+                    "Starting merges this exact PR and triggers the repository staging workflow."
+                    if selected_target == "staging"
+                    else "Starting merges this exact PR and triggers the repository release workflow."
+                ),
                 "Announce only after the exact staging/canary deployment is healthy.",
-                "Production environment approval remains a human gate.",
+                (
+                    "The supervisor stops after staging is healthy; production is not requested."
+                    if selected_target == "staging"
+                    else "Production environment approval remains a human gate."
+                ),
             ],
         }
 
@@ -282,9 +358,11 @@ class DeploymentCaptainClient:
         pr_number: int,
         head_sha: str,
         confirmation: str,
+        target: str = "production",
     ) -> dict[str, Any]:
         """Merge one exact, prepared release PR after an explicit confirmation."""
         config = _service(service)
+        selected_target = _target(config, target)
         if confirmation != _confirmation():
             raise RuntimeError(f"Confirmation must be exactly: {_confirmation()}")
 
@@ -305,6 +383,7 @@ class DeploymentCaptainClient:
                 "started": True,
                 "already_started": True,
                 "service": config.key,
+                "target": selected_target,
                 "version": title_match.group("version"),
                 "release_pr_number": pr_number,
                 "release_head_sha": head_sha,
@@ -312,7 +391,7 @@ class DeploymentCaptainClient:
                 "deployment_workflow": config.deployment_workflow,
             }
 
-        plan = self.prepare_release(config.key)
+        plan = self.prepare_release(config.key, selected_target, pr_number)
         release_pr = plan.get("release_pr") or {}
         if not plan.get("ready_to_start"):
             raise RuntimeError(f"Release is blocked: {plan.get('blockers')}")
@@ -323,7 +402,7 @@ class DeploymentCaptainClient:
         merged = self._github(
             "PUT",
             self._repo(config, f"/pulls/{pr_number}/merge"),
-            json={"sha": head_sha, "merge_method": "squash"},
+            json={"sha": head_sha, "merge_method": config.merge_method},
             expected={200},
         )
         if not merged.get("merged"):
@@ -331,6 +410,7 @@ class DeploymentCaptainClient:
         return {
             "started": True,
             "service": config.key,
+            "target": selected_target,
             "version": plan["version"],
             "release_pr_number": pr_number,
             "release_head_sha": head_sha,
@@ -346,10 +426,12 @@ class DeploymentCaptainClient:
         confirmation: str,
         slack_channel: str,
         slack_thread_ts: str,
+        target: str = "production",
     ) -> dict[str, Any]:
         """Create the durable Centaur release workflow; the workflow performs the merge."""
         config = _service(service)
-        plan = self.prepare_release(config.key)
+        selected_target = _target(config, target)
+        plan = self.prepare_release(config.key, selected_target, pr_number)
         if confirmation != plan.get("confirmation"):
             raise RuntimeError(f"Confirmation must be exactly: {plan.get('confirmation')}")
         if int((plan.get("release_pr") or {}).get("number") or 0) != pr_number:
@@ -374,8 +456,9 @@ class DeploymentCaptainClient:
                 "confirmation": confirmation,
                 "slack_channel": slack_channel,
                 "slack_thread_ts": slack_thread_ts,
+                "target": selected_target,
             },
-            "idempotency_key": f"deployment-captain:{config.key}:{head_sha}",
+            "idempotency_key": f"deployment-captain:{config.key}:{selected_target}:{head_sha}",
             "max_attempts": 3,
         }
         response = self._client.post(f"{api_url}/api/workflows/runs", json=payload)
@@ -387,6 +470,7 @@ class DeploymentCaptainClient:
         return {
             "launched": True,
             "service": config.key,
+            "target": selected_target,
             "run_id": result.get("run_id"),
             "status": result.get("status"),
             "created": result.get("created"),
