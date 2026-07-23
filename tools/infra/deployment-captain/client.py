@@ -285,6 +285,33 @@ class DeploymentCaptainClient:
     ) -> dict[str, Any]:
         """Merge one exact, prepared release PR after an explicit confirmation."""
         config = _service(service)
+        if confirmation != _confirmation():
+            raise RuntimeError(f"Confirmation must be exactly: {_confirmation()}")
+
+        exact_pull = self._github("GET", self._repo(config, f"/pulls/{pr_number}"))
+        title_match = _RELEASE_TITLE.fullmatch(str(exact_pull.get("title") or ""))
+        pull_head = exact_pull.get("head") or {}
+        if not title_match or not str(pull_head.get("ref") or "").startswith(
+            config.release_branch_prefix
+        ):
+            raise RuntimeError("PR is not the configured repository's Release Please PR.")
+        if str(pull_head.get("sha") or "") != head_sha:
+            raise RuntimeError("Prepared release head SHA no longer matches.")
+        if exact_pull.get("merged"):
+            merge_commit_sha = str(exact_pull.get("merge_commit_sha") or "")
+            if not merge_commit_sha:
+                raise RuntimeError("Merged release PR did not report a merge commit SHA.")
+            return {
+                "started": True,
+                "already_started": True,
+                "service": config.key,
+                "version": title_match.group("version"),
+                "release_pr_number": pr_number,
+                "release_head_sha": head_sha,
+                "merge_commit_sha": merge_commit_sha,
+                "deployment_workflow": config.deployment_workflow,
+            }
+
         plan = self.prepare_release(config.key)
         release_pr = plan.get("release_pr") or {}
         if not plan.get("ready_to_start"):
@@ -293,9 +320,6 @@ class DeploymentCaptainClient:
             raise RuntimeError("Prepared release PR number no longer matches.")
         if str(release_pr.get("head_sha") or "") != head_sha:
             raise RuntimeError("Prepared release head SHA no longer matches.")
-        if confirmation != plan.get("confirmation"):
-            raise RuntimeError(f"Confirmation must be exactly: {plan.get('confirmation')}")
-
         merged = self._github(
             "PUT",
             self._repo(config, f"/pulls/{pr_number}/merge"),
@@ -421,8 +445,10 @@ class DeploymentCaptainClient:
             for item in pending
             if isinstance(pending, list) and isinstance(item, dict)
         ]
-        names = {str(item["name"]) for item in pending_environments}
         required = set(config.approval_environments)
+        pending_required_environments = [
+            item for item in pending_environments if str(item["name"]) in required
+        ]
         return {
             "found": True,
             "service": config.key,
@@ -433,8 +459,9 @@ class DeploymentCaptainClient:
             "url": run.get("html_url"),
             "jobs": jobs,
             "pending_environments": pending_environments,
+            "pending_required_environments": pending_required_environments,
             "required_approval_environments": sorted(required),
-            "all_production_gates_ready": required.issubset(names),
+            "production_gates_ready": bool(pending_required_environments),
         }
 
     def cancel_release_run(self, service: str, run_id: int, confirmation: str) -> dict[str, Any]:

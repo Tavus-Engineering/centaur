@@ -104,7 +104,7 @@ async def _poll_release(
         )
         if not status.get("found"):
             raise RuntimeError(f"Exact deployment run {run_id} disappeared.")
-        if until_gates_ready and status.get("all_production_gates_ready"):
+        if until_gates_ready and status.get("production_gates_ready"):
             return status
         if (
             status.get("status") == "completed"
@@ -148,8 +148,8 @@ async def _announce_release(
     service = inp.service.upper()
     if transition == "staging-ready":
         instruction = (
-            "Post the staging-ready announcement now. The exact staging/canary deployment "
-            "is healthy and ready for change-owner verification."
+            "Post the staging-ready announcement now. The exact existing workflow has exposed "
+            "production gate(s) after the corresponding staging/canary path became healthy."
         )
     elif transition == "production-promotion":
         instruction = (
@@ -213,10 +213,12 @@ async def _poll_production(
     run_url: str,
     version: str,
     staging_announcement: Any,
+    initial_pending_environments: list[str],
     step_prefix: str,
 ) -> dict[str, Any]:
     last_failed: list[str] = []
     promotion_announced = False
+    seen_pending = set(initial_pending_environments)
     for attempt in range(_MAX_RELEASE_POLLS):
         status = await ctx.step(
             f"{step_prefix}-status-{attempt}",
@@ -251,7 +253,23 @@ async def _poll_production(
             last_failed = failed
         elif not failed:
             last_failed = []
-        if not failed and not status.get("all_production_gates_ready") and not promotion_announced:
+        pending = {
+            str(item.get("name"))
+            for item in status.get("pending_required_environments", [])
+            if item.get("name")
+        }
+        newly_pending = pending - seen_pending
+        if newly_pending:
+            await _notify(
+                ctx,
+                inp,
+                f"{step_prefix}-new-production-gates-{attempt}",
+                f"{inp.service.upper()} run {run_id} now also has production gate(s) ready: "
+                f"{', '.join(sorted(newly_pending))}. An eligible human may approve in GitHub.",
+            )
+            seen_pending.update(newly_pending)
+        approved = seen_pending - pending
+        if not failed and approved and not promotion_announced:
             await _announce_release(
                 ctx,
                 inp,
@@ -333,7 +351,7 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         )
         pending_names = [
             str(item.get("name"))
-            for item in gates.get("pending_environments", [])
+            for item in gates.get("pending_required_environments", [])
             if item.get("name")
         ]
         gate_summary = ", ".join(pending_names) or "the existing production gates"
@@ -352,6 +370,7 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
             run_url,
             str(started.get("version") or ""),
             staging_announcement,
+            pending_names,
             step_prefix=f"{service}-release",
         )
 

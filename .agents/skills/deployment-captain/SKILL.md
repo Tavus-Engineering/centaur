@@ -60,8 +60,9 @@ staging/canary deployment reaches its existing production gates and again when
 a human approval starts production promotion. That skill is announcement-only
 and must never deploy, approve, merge, change traffic, rerun, or roll back.
 
-RQH waits at `Manual Approval for Production`. CVI waits for all existing
-provider promotion gates. An eligible human approves in GitHub; Watch Agent
+RQH waits at `Manual Approval for Production`. CVI reports each existing
+provider promotion gate as it becomes available; those provider paths are
+intentionally independent. An eligible human approves in GitHub; Watch Agent
 never consumes a production gate.
 
 ## Supervise

@@ -139,6 +139,31 @@ def test_start_revalidates_exact_release_and_needs_only_deploy_confirmation():
     assert "acknowledgement_url" not in result
 
 
+def test_start_is_idempotent_after_exact_release_pr_was_merged():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path.endswith("/pulls/10")
+        return _response(
+            {
+                "number": 10,
+                "title": "chore(main): release 3.4.5",
+                "merged": True,
+                "merge_commit_sha": "b" * 40,
+                "head": {
+                    "ref": "release-please--branches--main",
+                    "sha": "a" * 40,
+                },
+            }
+        )
+
+    transport = httpx.MockTransport(handler)
+    with DeploymentCaptainClient(token="token", transport=transport) as client:
+        result = client.start_release("cvi", 10, "a" * 40, "deploy")
+
+    assert result["already_started"] is True
+    assert result["merge_commit_sha"] == "b" * 40
+
+
 def test_start_rejects_any_other_confirmation_before_merge():
     transport = httpx.MockTransport(_github_handler(active_run=False))
     with (

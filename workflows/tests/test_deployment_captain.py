@@ -38,31 +38,29 @@ class FakeContext:
             }
             if self.release_status_calls <= 2:
                 environments = (
-                    [
-                        {"name": "promote-to-prod-cerebrium"},
-                        {"name": "promote-to-prod-fal"},
-                        {"name": "promote-to-prod-modal"},
-                    ]
+                    [{"name": "promote-to-prod-cerebrium"}]
                     if args["service"] == "cvi"
                     else [{"name": "manual-approval"}]
                 )
                 return {
                     **base,
                     "status": "waiting",
-                    "all_production_gates_ready": True,
-                    "pending_environments": environments,
+                    "production_gates_ready": True,
+                    "pending_required_environments": environments,
                 }
             if self.release_status_calls == 3:
                 return {
                     **base,
                     "status": "in_progress",
-                    "all_production_gates_ready": False,
+                    "production_gates_ready": False,
+                    "pending_required_environments": [],
                 }
             return {
                 **base,
                 "status": "completed",
                 "conclusion": "success",
-                "all_production_gates_ready": False,
+                "production_gates_ready": False,
+                "pending_required_environments": [],
             }
         raise AssertionError(f"unexpected tool method: {method}")
 
@@ -139,7 +137,8 @@ def test_workflow_holds_failed_existing_run_then_notices_same_run_retry():
                     **base,
                     "status": "completed",
                     "conclusion": "failure",
-                    "all_production_gates_ready": False,
+                    "production_gates_ready": False,
+                    "pending_required_environments": [],
                     "jobs": [
                         {
                             "name": "Build and Push Service Image to ECR (Staging)",
@@ -152,28 +151,32 @@ def test_workflow_holds_failed_existing_run_then_notices_same_run_retry():
                 return {
                     **base,
                     "status": "in_progress",
-                    "all_production_gates_ready": False,
+                    "production_gates_ready": False,
+                    "pending_required_environments": [],
                     "jobs": [],
                 }
             if self.release_status_calls == 4:
                 return {
                     **base,
                     "status": "waiting",
-                    "all_production_gates_ready": True,
+                    "production_gates_ready": True,
+                    "pending_required_environments": [{"name": "manual-approval"}],
                     "jobs": [],
                 }
             if self.release_status_calls == 5:
                 return {
                     **base,
                     "status": "in_progress",
-                    "all_production_gates_ready": False,
+                    "production_gates_ready": False,
+                    "pending_required_environments": [],
                     "jobs": [],
                 }
             return {
                 **base,
                 "status": "completed",
                 "conclusion": "success",
-                "all_production_gates_ready": False,
+                "production_gates_ready": False,
+                "pending_required_environments": [],
                 "jobs": [],
             }
 
