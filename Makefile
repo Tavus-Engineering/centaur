@@ -38,6 +38,7 @@ deploy:
 	  --set sandbox.image.repository="$(CENTAUR_SANDBOX_IMAGE_REPOSITORY)" \
 	  --set sandbox.image.tag="fork-$${SHA}" \
 	  --set sandbox.image.pullPolicy=IfNotPresent \
+	  --set-json 'sandbox.extraEnv.CENTAUR_HARNESS_CONFIG_DIR=null' \
 	  --set slackbotv2.image.repository="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY)" \
 	  --set slackbotv2.image.tag="fork-$${SHA}" \
 	  --set slackbotv2.image.pullPolicy=IfNotPresent; \
