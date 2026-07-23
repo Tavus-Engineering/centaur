@@ -67,7 +67,8 @@ The open-source tool inventory lives in this `tools/` tree and changes over time
 - `preqin`: query Preqin Operational API fund and fund-manager data, with
   redacted auth diagnostics for `PREQIN_*` credentials.
 - `deployment-captain`: prepare and supervise exact CVI/RQH release runs through
-  guarded GitHub operations without exposing AWS or provider credentials to agents.
+  the repositories' existing GitHub workflows, without exposing AWS or provider
+  credentials to agents.
 
 ## Sandbox Tool Paths
 

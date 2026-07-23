@@ -78,13 +78,11 @@ class DeploymentCaptainClient:
     def __init__(
         self,
         token: str | None = None,
-        approver_token: str | None = None,
         timeout: float = 30.0,
         transport: httpx.BaseTransport | None = None,
         centaur_api_url: str | None = None,
     ) -> None:
         self._token = token
-        self._approver_token_value = approver_token
         self._centaur_api_url = centaur_api_url
         self._client = httpx.Client(timeout=timeout, transport=transport)
 
@@ -94,19 +92,10 @@ class DeploymentCaptainClient:
             raise RuntimeError("GITHUB_TOKEN is required.")
         return token
 
-    def _approver_token(self) -> str:
-        token = (self._approver_token_value or secret("GITHUB_APPROVER_TOKEN", "")).strip()
-        if not token or token == "GITHUB_APPROVER_TOKEN":
-            raise RuntimeError(
-                "GITHUB_APPROVER_TOKEN is required and must belong to an eligible "
-                "identity distinct from the release initiator."
-            )
-        return token
-
-    def _headers(self, token: str | None = None) -> dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token or self._github_token()}",
+            "Authorization": f"Bearer {self._github_token()}",
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
@@ -118,12 +107,11 @@ class DeploymentCaptainClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         expected: set[int] | None = None,
-        token: str | None = None,
     ) -> Any:
         response = self._client.request(
             method,
             f"{_GITHUB_API}{path}",
-            headers=self._headers(token),
+            headers=self._headers(),
             params=params,
             json=json,
         )
@@ -334,7 +322,6 @@ class DeploymentCaptainClient:
         confirmation: str,
         slack_channel: str,
         slack_thread_ts: str,
-        soak_minutes: int = 10,
     ) -> dict[str, Any]:
         """Create the durable Centaur release workflow; the workflow performs the merge."""
         config = _service(service)
@@ -363,7 +350,6 @@ class DeploymentCaptainClient:
                 "confirmation": confirmation,
                 "slack_channel": slack_channel,
                 "slack_thread_ts": slack_thread_ts,
-                "soak_minutes": max(5, min(int(soak_minutes), 60)),
             },
             "idempotency_key": f"deployment-captain:{config.key}:{head_sha}",
             "max_attempts": 3,
@@ -451,77 +437,6 @@ class DeploymentCaptainClient:
             "all_production_gates_ready": required.issubset(names),
         }
 
-    def dispatch_cvi_traffic(
-        self,
-        stage_fraction: int,
-        request_id: str,
-        confirmation: str,
-    ) -> dict[str, Any]:
-        """Dispatch the RQH-owned CVI traffic workflow for exactly 0% or 5% stage."""
-        if stage_fraction not in {0, 5}:
-            raise RuntimeError("stage_fraction must be 0 or 5.")
-        expected = f"SET CVI STAGE TO {stage_fraction} FOR {request_id}"
-        if confirmation != expected:
-            raise RuntimeError(f"Confirmation must be exactly: {expected}")
-        config = _service("rqh")
-        self._github(
-            "POST",
-            self._repo(config, "/actions/workflows/cvi-traffic-routing.yml/dispatches"),
-            json={
-                "ref": "main",
-                "inputs": {
-                    "mode": "apply",
-                    "stage_fraction": str(stage_fraction),
-                    "request_id": request_id,
-                    "reason": "Centaur deployment-captain workflow",
-                    "confirmation": confirmation,
-                },
-            },
-            expected={204},
-        )
-        return {"dispatched": True, "stage_fraction": stage_fraction, "request_id": request_id}
-
-    def dispatch_cerebrium_rollback(
-        self,
-        phoenix3_build_id: str,
-        phoenix4_build_id: str,
-        incident_url: str,
-        request_id: str,
-        confirmation: str,
-    ) -> dict[str, Any]:
-        """Dispatch the CVI-owned exact-build Cerebrium rollback workflow."""
-        if not re.fullmatch(r"build-[A-Za-z0-9_-]+", phoenix3_build_id):
-            raise RuntimeError("phoenix3_build_id must be an exact Cerebrium build-* ID.")
-        if not re.fullmatch(r"build-[A-Za-z0-9_-]+", phoenix4_build_id):
-            raise RuntimeError("phoenix4_build_id must be an exact Cerebrium build-* ID.")
-        expected = (
-            f"ROLL BACK CEREBRIUM TO {phoenix3_build_id},{phoenix4_build_id} FOR {request_id}"
-        )
-        if confirmation != expected:
-            raise RuntimeError(f"Confirmation must be exactly: {expected}")
-        if not incident_url.startswith("https://"):
-            raise RuntimeError(
-                "incident_url must be an https URL for the active outage thread/call."
-            )
-        config = _service("cvi")
-        self._github(
-            "POST",
-            self._repo(config, "/actions/workflows/cerebrium-emergency-rollback.yml/dispatches"),
-            json={
-                "ref": "main",
-                "inputs": {
-                    "mode": "apply",
-                    "phoenix3_build_id": phoenix3_build_id,
-                    "phoenix4_build_id": phoenix4_build_id,
-                    "incident_url": incident_url,
-                    "request_id": request_id,
-                    "confirmation": confirmation,
-                },
-            },
-            expected={204},
-        )
-        return {"dispatched": True, "request_id": request_id}
-
     def cancel_release_run(self, service: str, run_id: int, confirmation: str) -> dict[str, Any]:
         """Cancel one exact active deployment run after explicit confirmation."""
         config = _service(service)
@@ -555,6 +470,10 @@ class DeploymentCaptainClient:
         if confirmation != expected:
             raise RuntimeError(f"Confirmation must be exactly: {expected}")
         run = self._github("GET", self._repo(config, f"/actions/runs/{run_id}"))
+        if str(run.get("path") or "").split("@")[0] != (
+            f".github/workflows/{config.deployment_workflow}"
+        ):
+            raise RuntimeError("Run does not belong to the configured deployment workflow.")
         if str(run.get("head_sha") or "") != head_sha:
             raise RuntimeError("Run head SHA does not match the supplied head_sha.")
         if run.get("status") != _TERMINAL_RUN_STATUS:
@@ -565,92 +484,6 @@ class DeploymentCaptainClient:
             expected={201},
         )
         return {"rerun_started": True, "run_id": run_id, "head_sha": head_sha}
-
-    def approve_production_gates(
-        self,
-        service: str,
-        run_id: int,
-        environment_names: list[str],
-        comment: str,
-        confirmation: str,
-    ) -> dict[str, Any]:
-        """Approve exact pending environments; requires a distinct eligible GitHub identity."""
-        config = _service(service)
-        requested = set(environment_names)
-        if not requested or not requested.issubset(config.approval_environments):
-            raise RuntimeError(
-                f"environment_names must be a non-empty subset of "
-                f"{sorted(config.approval_environments)}"
-            )
-        expected = (
-            f"APPROVE {config.display_name} RUN {run_id} ENVIRONMENTS {','.join(sorted(requested))}"
-        )
-        if confirmation != expected:
-            raise RuntimeError(f"Confirmation must be exactly: {expected}")
-        pending = self._github(
-            "GET", self._repo(config, f"/actions/runs/{run_id}/pending_deployments")
-        )
-        available = {
-            str((item.get("environment") or {}).get("name")): int(
-                (item.get("environment") or {}).get("id")
-            )
-            for item in pending
-            if isinstance(pending, list)
-            and isinstance(item, dict)
-            and (item.get("environment") or {}).get("id") is not None
-        }
-        missing = requested - set(available)
-        if missing:
-            raise RuntimeError(f"Environments are not pending on run {run_id}: {sorted(missing)}")
-        self._github(
-            "POST",
-            self._repo(config, f"/actions/runs/{run_id}/pending_deployments"),
-            json={
-                "environment_ids": [available[name] for name in sorted(requested)],
-                "state": "approved",
-                "comment": comment[:1000],
-            },
-            expected={200},
-            token=self._approver_token(),
-        )
-        return {"approved": True, "run_id": run_id, "environments": sorted(requested)}
-
-    def workflow_dispatch_status(
-        self, repository_service: str, workflow_file: str, request_id: str
-    ) -> dict[str, Any]:
-        """Find a guarded facade workflow run by its unique request ID."""
-        config = _service(repository_service)
-        allowed = {
-            "rqh": {"cvi-traffic-routing.yml"},
-            "cvi": {"cerebrium-emergency-rollback.yml"},
-        }
-        if workflow_file not in allowed[config.key]:
-            raise RuntimeError("workflow_file is not an allowed deployment-captain facade.")
-        payload = self._github(
-            "GET",
-            self._repo(config, f"/actions/workflows/{workflow_file}/runs"),
-            params={"event": "workflow_dispatch", "per_page": 50},
-        )
-        candidates = [
-            run
-            for run in payload.get("workflow_runs", [])
-            if request_id in str(run.get("display_title") or "")
-        ]
-        if len(candidates) != 1:
-            return {
-                "found": False,
-                "request_id": request_id,
-                "candidate_run_ids": [run.get("id") for run in candidates],
-            }
-        run = candidates[0]
-        return {
-            "found": True,
-            "request_id": request_id,
-            "run_id": run.get("id"),
-            "status": run.get("status"),
-            "conclusion": run.get("conclusion"),
-            "url": run.get("html_url"),
-        }
 
     def close(self) -> None:
         self._client.close()

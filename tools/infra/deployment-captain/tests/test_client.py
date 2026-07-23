@@ -176,60 +176,71 @@ def test_launch_payload_has_short_confirmation_and_no_acknowledgement():
     assert result["launched"] is True
     assert captured["input"]["confirmation"] == "deploy"
     assert "acknowledgement_url" not in captured["input"]
+    assert set(captured["input"]) == {
+        "service",
+        "pr_number",
+        "head_sha",
+        "confirmation",
+        "slack_channel",
+        "slack_thread_ts",
+    }
 
 
-def test_dispatch_traffic_rejects_non_handbook_fraction_without_api_call():
-    def fail_if_called(request):
-        raise AssertionError(f"unexpected request: {request}")
+def test_rerun_failed_jobs_is_bound_to_exact_existing_run_and_sha():
+    head_sha = "b" * 40
 
-    transport = httpx.MockTransport(fail_if_called)
-    with (
-        DeploymentCaptainClient(token="token", transport=transport) as client,
-        pytest.raises(RuntimeError, match="0 or 5"),
-    ):
-        client.dispatch_cvi_traffic(10, "request-1", "anything")
-
-
-def test_approval_uses_distinct_approver_token():
-    def handler(request):
+    def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        if path.endswith("/actions/runs/700/pending_deployments") and request.method == "GET":
-            assert request.headers["authorization"] == "Bearer initiator"
-            return _response([{"environment": {"id": 9, "name": "manual-approval"}}])
-        if path.endswith("/actions/runs/700/pending_deployments") and request.method == "POST":
-            assert request.headers["authorization"] == "Bearer approver"
-            return _response({"ok": True})
+        if path.endswith("/actions/runs/700") and request.method == "GET":
+            return _response(
+                {
+                    "id": 700,
+                    "path": ".github/workflows/build-test-deploy-staging-prod-region.yml@refs/heads/main",
+                    "head_sha": head_sha,
+                    "status": "completed",
+                    "conclusion": "failure",
+                }
+            )
+        if path.endswith("/actions/runs/700/rerun-failed-jobs") and request.method == "POST":
+            return _response({}, 201)
         raise AssertionError(f"unexpected request: {request.method} {path}")
 
     transport = httpx.MockTransport(handler)
-    with DeploymentCaptainClient(
-        token="initiator", approver_token="approver", transport=transport
-    ) as client:
-        result = client.approve_production_gates(
+    with DeploymentCaptainClient(token="token", transport=transport) as client:
+        result = client.rerun_failed_jobs(
             "rqh",
             700,
-            ["manual-approval"],
-            "Canary is healthy",
-            "APPROVE RQH RUN 700 ENVIRONMENTS manual-approval",
+            head_sha,
+            f"RERUN FAILED RQH RUN 700 AT {head_sha}",
         )
 
-    assert result["approved"] is True
+    assert result == {"rerun_started": True, "run_id": 700, "head_sha": head_sha}
 
 
-def test_dispatch_traffic_is_bound_to_request_confirmation():
-    seen: list[dict] = []
+def test_rerun_failed_jobs_rejects_wrong_sha_before_dispatch():
+    head_sha = "b" * 40
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(json.loads(request.content))
-        return httpx.Response(204)
+        if request.url.path.endswith("/actions/runs/700"):
+            return _response(
+                {
+                    "id": 700,
+                    "path": ".github/workflows/build-test-deploy-staging-prod-region.yml@refs/heads/main",
+                    "head_sha": "c" * 40,
+                    "status": "completed",
+                    "conclusion": "failure",
+                }
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
 
     transport = httpx.MockTransport(handler)
-    with DeploymentCaptainClient(token="token", transport=transport) as client:
-        result = client.dispatch_cvi_traffic(
-            5,
-            "workflow-run-1-stage-5",
-            "SET CVI STAGE TO 5 FOR workflow-run-1-stage-5",
+    with (
+        DeploymentCaptainClient(token="token", transport=transport) as client,
+        pytest.raises(RuntimeError, match="head SHA"),
+    ):
+        client.rerun_failed_jobs(
+            "rqh",
+            700,
+            head_sha,
+            f"RERUN FAILED RQH RUN 700 AT {head_sha}",
         )
-    assert result["dispatched"] is True
-    assert seen[0]["inputs"]["stage_fraction"] == "5"
-    assert seen[0]["inputs"]["request_id"] == "workflow-run-1-stage-5"

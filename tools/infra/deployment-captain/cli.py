@@ -42,7 +42,6 @@ def launch(
     confirmation: str = typer.Option(..., "--confirmation"),
     slack_channel: str = typer.Option(..., "--slack-channel"),
     slack_thread_ts: str = typer.Option(..., "--slack-thread-ts"),
-    soak_minutes: int = typer.Option(10, "--soak-minutes"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON"),
 ) -> None:
     """Launch the durable workflow after the user repeats the exact confirmation."""
@@ -55,7 +54,6 @@ def launch(
                 confirmation,
                 slack_channel,
                 slack_thread_ts,
-                soak_minutes,
             ),
             json_output,
         )
@@ -97,71 +95,6 @@ def rerun_failed(
     with DeploymentCaptainClient() as client:
         _print(
             client.rerun_failed_jobs(service, run_id, head_sha, confirmation),
-            json_output,
-        )
-
-
-@app.command("approve")
-def approve(
-    service: str = typer.Argument(..., help="cvi or rqh"),
-    run_id: int = typer.Option(..., "--run-id"),
-    environment: list[str] = typer.Option(..., "--environment"),  # noqa: B008
-    comment: str = typer.Option(..., "--comment"),
-    confirmation: str = typer.Option(..., "--confirmation"),
-    json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON"),
-) -> None:
-    """Approve exact gates with a distinct eligible GitHub identity."""
-    with DeploymentCaptainClient() as client:
-        _print(
-            client.approve_production_gates(
-                service,
-                run_id,
-                environment,
-                comment,
-                confirmation,
-            ),
-            json_output,
-        )
-
-
-@app.command("rollback-cerebrium")
-def rollback_cerebrium(
-    phoenix3_build_id: str = typer.Option(..., "--phoenix3-build-id"),
-    phoenix4_build_id: str = typer.Option(..., "--phoenix4-build-id"),
-    incident_url: str = typer.Option(..., "--incident-url"),
-    request_id: str = typer.Option(..., "--request-id"),
-    confirmation: str = typer.Option(..., "--confirmation"),
-    json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON"),
-) -> None:
-    """Dispatch exact-build Phoenix 3 then Phoenix 4 emergency rollback."""
-    with DeploymentCaptainClient() as client:
-        _print(
-            client.dispatch_cerebrium_rollback(
-                phoenix3_build_id,
-                phoenix4_build_id,
-                incident_url,
-                request_id,
-                confirmation,
-            ),
-            json_output,
-        )
-
-
-@app.command("facade-status")
-def facade_status(
-    repository_service: str = typer.Argument(..., help="cvi or rqh"),
-    workflow_file: str = typer.Option(..., "--workflow-file"),
-    request_id: str = typer.Option(..., "--request-id"),
-    json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON"),
-) -> None:
-    """Inspect one exact routing or rollback facade run."""
-    with DeploymentCaptainClient() as client:
-        _print(
-            client.workflow_dispatch_status(
-                repository_service,
-                workflow_file,
-                request_id,
-            ),
             json_output,
         )
 

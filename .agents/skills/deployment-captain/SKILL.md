@@ -1,12 +1,13 @@
 ---
 name: deployment-captain
-description: Prepare, start, supervise, rerun, cancel, or roll back Tavus CVI and RQH production releases. Use when a user asks Watch Agent to deploy CVI/realtime-replica or RQH/request-handler, check a release, manage canary traffic, handle GitHub production gates, or perform the deployment-captain handbook duties.
+description: Prepare, start, supervise, rerun, or cancel Tavus CVI and RQH production releases. Use when a user asks Watch Agent to deploy CVI/realtime-replica or RQH/request-handler, check a release, handle existing GitHub production gates, or perform the deployment-captain handbook duties.
 ---
 
 # Deployment Captain
 
-Use the `deployment-captain` CLI for every release operation. Never merge a
-release PR or dispatch a deployment with raw `gh`, AWS, Cerebrium, or HTTP calls.
+Use the `deployment-captain` CLI for release PR and exact-run operations. It
+operates the existing repository-owned GitHub workflows; it does not require
+deployment-facade or rollback-facade changes in RQH or realtime-replica.
 
 Read [references/playbook.md](references/playbook.md) before the first operation
 in a thread.
@@ -49,21 +50,19 @@ deployment-captain launch <cvi|rqh> \
   --json
 ```
 
-The durable workflow binds the release PR, merge SHA, and Actions run ID. It
-uses the Skillshare `tavus-announce-release` skill only after the exact
-staging/canary deployment is healthy and again when a human approval starts
-production promotion. That skill is announcement-only and must never deploy,
-approve, merge, change traffic, rerun, or roll back.
+The durable workflow binds the release PR, merge SHA, and Actions run ID, then
+supervises that exact existing workflow. The repository workflow owns builds,
+staging/canary rollout, production promotion, and rollback jobs. Watch Agent
+does not change AWS traffic or dispatch a separate rollback workflow.
 
-CVI waits for all provider canary gates, shifts new conversations to 5% stage,
-soaks, obtains an observation-only SigNoz assessment, and asks for human
-production approval. It always attempts to restore routing to 100/0/0.
+Use the Skillshare `tavus-announce-release` skill only after the exact
+staging/canary deployment reaches its existing production gates and again when
+a human approval starts production promotion. That skill is announcement-only
+and must never deploy, approve, merge, change traffic, rerun, or roll back.
 
-RQH waits at `Manual Approval for Production` and announces when it is ready.
-GitHub does not allow the deployment initiator to self-approve. Default to a
-human approval. Only use `deployment-captain approve` after a separate explicit
-approval confirmation and only when `GITHUB_APPROVER_TOKEN` is provisioned for
-a distinct eligible identity.
+RQH waits at `Manual Approval for Production`. CVI waits for all existing
+provider promotion gates. An eligible human approves in GitHub; Watch Agent
+never consumes a production gate.
 
 ## Supervise
 
@@ -77,18 +76,13 @@ a distinct eligible identity.
   merge SHA. The durable supervisor will notice that same-run retry.
 - Use the exact run ID and merge SHA in every status, cancel, or rerun operation.
 - Never cancel stale runs implicitly. Show the exact cancel confirmation first.
-- Never approve a production gate with the same GitHub identity that initiated
-  the release. Default to a human GitHub approval.
-- If the CVI workflow reports a HOLD, leave production gates unapproved.
-- If automatic stage reset fails, make the 100/0/0 restoration the top-priority
-  human action.
+- Never approve a production gate. Direct an eligible human to the exact GitHub
+  Actions run.
 
-## Emergency rollback
+## Rollback
 
-Do not infer rollback authorization from “deploy.” Require an active `#outages`
-thread/call, exact known-good `build-*` IDs for both Phoenix 3 and Phoenix 4,
-and the tool's exact rollback confirmation. The repository-owned workflow
-validates both builds before changing either app and redeploys Phoenix 3 first.
-
-After rollback, verify provider health and announce resolution in `#outages`,
-`#cvi-dev`, and `#ext-cerebrium-tavus` as applicable.
+Watch Agent monitors rollback jobs that are already part of the exact existing
+release workflow. It does not create or dispatch a separate emergency rollback
+workflow. A rollback outside that run is incident response, not deployment
+captain automation; require explicit human direction and follow the owning
+repository's current runbook.

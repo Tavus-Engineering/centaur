@@ -28,5 +28,4 @@ module = "client.py"
 timeout_s = 60
 secrets = [
     {type = "http", name = "GITHUB_TOKEN", match_headers = ["authorization"], hosts = ["api.github.com"]},
-    {type = "http", name = "GITHUB_APPROVER_TOKEN", match_headers = ["authorization"], hosts = ["api.github.com"]},
 ]
