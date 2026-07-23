@@ -20,4 +20,4 @@ line in the PR that syncs it back.
 | 447565b9 | slackbot: prompt routed DM users to post successful results back to the original thread | [#21](https://github.com/Tavus-Engineering/centaur/pull/21) |
 | 5301a4f1 | slackbot: read full routed DM metadata payloads before posting approved results back | [#22](https://github.com/Tavus-Engineering/centaur/pull/22) |
 | 866b8047 | slackbot: restore fork slackbot (v1) dropped by the upstream sync and strip the DM-only "post this answer?" question from results posted back to public threads | [#24](https://github.com/Tavus-Engineering/centaur/pull/24) |
-| 0a9e71e3 | deployment captain: interactively deploy CVI, RQH, and Tavus API through existing GitHub workflows | [#25](https://github.com/Tavus-Engineering/centaur/pull/25) |
+| 47f6e860 | deployment captain: interactively deploy CVI, RQH, and Tavus API through existing GitHub workflows, with safe chart-default merging for Centaur rollouts | [#25](https://github.com/Tavus-Engineering/centaur/pull/25) |
