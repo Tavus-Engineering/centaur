@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+import asyncio
+import inspect
+
+from workflows import deployment_captain
+
+
+class FakeContext:
+    def __init__(self) -> None:
+        self.run_id = "wf-123"
+        self.release_status_calls = 0
+        self.notifications: list[str] = []
+        self.announcements: list[str] = []
+
+    async def step(self, name, fn, **kwargs):
+        del name, kwargs
+        result = fn()
+        return await result if inspect.isawaitable(result) else result
+
+    async def sleep(self, name, duration):
+        del name, duration
+
+    async def call_tool(self, tool, method, args):
+        assert tool == "deployment-captain"
+        if method == "start_release":
+            return {
+                "version": "3.4.5",
+                "merge_commit_sha": "b" * 40,
+            }
+        if method == "release_run_status":
+            self.release_status_calls += 1
+            base = {
+                "found": True,
+                "run_id": 700,
+                "url": "https://github.test/run/700",
+                "jobs": [],
+            }
+            if self.release_status_calls <= 2:
+                environments = (
+                    [{"name": "promote-to-prod-cerebrium"}]
+                    if args["service"] == "cvi"
+                    else [{"name": "manual-approval"}]
+                )
+                return {
+                    **base,
+                    "status": "waiting",
+                    "production_gates_ready": True,
+                    "pending_required_environments": environments,
+                }
+            if self.release_status_calls == 3:
+                return {
+                    **base,
+                    "status": "in_progress",
+                    "production_gates_ready": False,
+                    "pending_required_environments": [],
+                }
+            return {
+                **base,
+                "status": "completed",
+                "conclusion": "success",
+                "production_gates_ready": False,
+                "pending_required_environments": [],
+            }
+        raise AssertionError(f"unexpected tool method: {method}")
+
+    async def post_to_slack(self, channel, text, **kwargs):
+        assert channel == "C123"
+        assert kwargs["thread_ts"] == "1234.5"
+        self.notifications.append(text)
+        return {"ok": True}
+
+    async def agent_turn(self, text, **kwargs):
+        assert "$tavus-announce-release" in text
+        transition = kwargs["metadata"]["transition"]
+        self.announcements.append(transition)
+        assert "no pre-deployment coordination post" in text
+        return {"permalink": "https://tavus.slack.com/archives/C08GJASBJD8/p123"}
+
+
+def test_cvi_workflow_uses_existing_provider_gates_without_facades():
+    ctx = FakeContext()
+    inp = deployment_captain.Input(
+        service="cvi",
+        pr_number=10,
+        head_sha="a" * 40,
+        confirmation="deploy",
+        slack_channel="C123",
+        slack_thread_ts="1234.5",
+    )
+
+    result = asyncio.run(deployment_captain.handler(inp, ctx))
+
+    assert result["conclusion"] == "success"
+    assert result["production_approval"] == "human"
+    assert ctx.announcements == ["staging-ready", "production-promotion"]
+    assert any("promote-to-prod-cerebrium" in message for message in ctx.notifications)
+    assert any("approve in GitHub" in message for message in ctx.notifications)
+
+
+def test_rqh_workflow_announces_manual_production_gate():
+    ctx = FakeContext()
+    inp = deployment_captain.Input(
+        service="rqh",
+        pr_number=10,
+        head_sha="a" * 40,
+        confirmation="deploy",
+        slack_channel="C123",
+        slack_thread_ts="1234.5",
+    )
+
+    result = asyncio.run(deployment_captain.handler(inp, ctx))
+
+    assert result["conclusion"] == "success"
+    assert any("manual-approval" in message for message in ctx.notifications)
+    assert ctx.announcements == ["staging-ready", "production-promotion"]
+
+
+def test_explicit_rqh_staging_target_stops_at_the_human_production_gate():
+    ctx = FakeContext()
+    inp = deployment_captain.Input(
+        service="rqh",
+        pr_number=10,
+        head_sha="a" * 40,
+        confirmation="deploy",
+        slack_channel="C123",
+        slack_thread_ts="1234.5",
+        target="stage",
+    )
+
+    result = asyncio.run(deployment_captain.handler(inp, ctx))
+
+    assert result["target"] == "staging"
+    assert result["conclusion"] == "staging-ready"
+    assert result["production_approval"] == "not-requested"
+    assert ctx.release_status_calls == 2
+    assert ctx.announcements == ["staging-ready"]
+    assert any(
+        "Production was not requested" in message for message in ctx.notifications
+    )
+
+
+def test_tavus_api_stage_completes_without_a_production_gate_or_release_skill():
+    class TavusApiContext(FakeContext):
+        async def call_tool(self, tool, method, args):
+            if method != "release_run_status":
+                return await super().call_tool(tool, method, args)
+
+            self.release_status_calls += 1
+            base = {
+                "found": True,
+                "run_id": 701,
+                "url": "https://github.test/run/701",
+                "jobs": [],
+                "production_gates_ready": False,
+                "pending_required_environments": [],
+            }
+            if self.release_status_calls == 1:
+                return {**base, "status": "in_progress", "conclusion": None}
+            return {**base, "status": "completed", "conclusion": "success"}
+
+    ctx = TavusApiContext()
+    inp = deployment_captain.Input(
+        service="tavus-api",
+        pr_number=10,
+        head_sha="a" * 40,
+        confirmation="deploy",
+        slack_channel="C123",
+        slack_thread_ts="1234.5",
+        target="staging",
+    )
+
+    result = asyncio.run(deployment_captain.handler(inp, ctx))
+
+    assert result["service"] == "tavus-api"
+    assert result["target"] == "staging"
+    assert result["conclusion"] == "staging-ready"
+    assert result["production_approval"] == "not-requested"
+    assert ctx.announcements == []
+    assert any(
+        "completed its staging deployment" in message for message in ctx.notifications
+    )
+
+
+def test_workflow_holds_failed_existing_run_then_notices_same_run_retry():
+    class FailureRecoveryContext(FakeContext):
+        async def call_tool(self, tool, method, args):
+            if method != "release_run_status":
+                return await super().call_tool(tool, method, args)
+
+            self.release_status_calls += 1
+            base = {
+                "found": True,
+                "run_id": 700,
+                "url": "https://github.test/run/700",
+            }
+            if self.release_status_calls <= 2:
+                return {
+                    **base,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "production_gates_ready": False,
+                    "pending_required_environments": [],
+                    "jobs": [
+                        {
+                            "name": "Build and Push Service Image to ECR (Staging)",
+                            "status": "completed",
+                            "conclusion": "failure",
+                        }
+                    ],
+                }
+            if self.release_status_calls == 3:
+                return {
+                    **base,
+                    "status": "in_progress",
+                    "production_gates_ready": False,
+                    "pending_required_environments": [],
+                    "jobs": [],
+                }
+            if self.release_status_calls == 4:
+                return {
+                    **base,
+                    "status": "waiting",
+                    "production_gates_ready": True,
+                    "pending_required_environments": [{"name": "manual-approval"}],
+                    "jobs": [],
+                }
+            if self.release_status_calls == 5:
+                return {
+                    **base,
+                    "status": "in_progress",
+                    "production_gates_ready": False,
+                    "pending_required_environments": [],
+                    "jobs": [],
+                }
+            return {
+                **base,
+                "status": "completed",
+                "conclusion": "success",
+                "production_gates_ready": False,
+                "pending_required_environments": [],
+                "jobs": [],
+            }
+
+    ctx = FailureRecoveryContext()
+    inp = deployment_captain.Input(
+        service="rqh",
+        pr_number=10,
+        head_sha="a" * 40,
+        confirmation="deploy",
+        slack_channel="C123",
+        slack_thread_ts="1234.5",
+    )
+
+    result = asyncio.run(deployment_captain.handler(inp, ctx))
+
+    assert result["conclusion"] == "success"
+    assert any("has failed jobs" in message for message in ctx.notifications)
+    assert ctx.announcements == ["staging-ready", "production-promotion"]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deployment Captain"
+  short_description: "Safely deploy CVI, RQH, and Tavus API"
+  default_prompt: "Use $deployment-captain to clarify the service and destination, then prepare the exact release."
