@@ -25,6 +25,13 @@ import {
 } from '@centaur/rendering'
 import { conflateChatSdkStream } from './conflate'
 import { observeSeconds, slackbotMetrics } from './metrics'
+import {
+  extractSlackOrigin,
+  isSlackDmThreadId,
+  OriginPostbackManager,
+  slackChannelFromThreadId,
+  type PostbackSession
+} from './origin-postback'
 import { renderSlackDisplayText, slackMessagePromptText } from './slack-display-text'
 import { slackUserIdForMessage } from './slack-user'
 import {
@@ -110,6 +117,11 @@ type SlackbotV2RequestContext = {
 }
 
 const requestContext = new AsyncLocalStorage<SlackbotV2RequestContext>()
+
+// Origin-thread postback state for DM investigations (see origin-postback.ts).
+// Module-scoped so the free render/handoff functions below can reach it; bound
+// to the live Chat instance in createSlackbotV2.
+const originPostback = new OriginPostbackManager()
 const RENDER_OBLIGATION_INDEX_KEY = 'slackbotv2:render:index'
 const RENDER_OBLIGATION_INDEX_MAX_LENGTH = 2000
 const RENDER_INDEX_TTL_MS = 30 * 24 * 60 * 60 * 1000
@@ -205,6 +217,11 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     logger
   })
   const lateSlackFiles = createLateSlackFileRepair(options, state)
+  originPostback.bind({
+    chat: chat as unknown as Chat,
+    logger,
+    recomposeAnswer: session => recomposeFinalAnswerText(options, session)
+  })
 
   chat.onNewMention(async (thread, message) => {
     if (!isAllowedSlackMessage(message, options, logger)) return
@@ -295,6 +312,13 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
           })
         }
       }
+      if (response.ok) {
+        // The chat SDK's Slack adapter does not process reaction events, so
+        // approval reactions for origin postbacks are handled here — only
+        // after the SDK accepted the request (signature verified).
+        const postbackTask = originPostback.handleWebhookBody(rawBody)
+        if (postbackTask) waitUntil(c, postbackTask)
+      }
       const lateFileTask = lateSlackFiles.repairFromWebhook(rawBody)
       if (lateFileTask) waitUntil(c, lateFileTask)
       outcome = response.ok ? 'success' : 'error'
@@ -355,6 +379,13 @@ async function handleSlackMessageHandoff(
   try {
     if (await handleStopCommand(thread, message, input.options, input.trigger)) {
       return
+    }
+    if (input.mode === 'execute' && isSlackDmThreadId(thread.id)) {
+      const requesterUserId = slackUserIdForMessage(message)
+      const origin = extractSlackOrigin(message.text, slackChannelFromThreadId(thread.id))
+      if (origin && requesterUserId) {
+        originPostback.rememberOrigin(thread.id, origin, requesterUserId)
+      }
     }
     if (input.subscribe) {
       await subscribeSlackThreadForHandoff(thread, input.options, trace, input.trigger)
@@ -1237,6 +1268,15 @@ async function renderExecutionAttempt(
       last_event_id: getLastEventId()
     })
     recordRenderAttempt('live', outcome, renderStartedAtMs)
+    if (rendered && !retry && isSlackDmThreadId(thread.id)) {
+      backgroundWaitUntil(
+        originPostback.offerAfterRender(thread, {
+          afterEventId: input.afterEventId,
+          executionId: input.executionId,
+          threadId: input.threadId
+        })
+      )
+    }
   }
 }
 
@@ -1286,6 +1326,50 @@ const FALLBACK_OPEN_MAX_ATTEMPTS = 4
  * result text once. Slack streaming is best-effort; this is the delivery
  * guarantee. Returns null when nothing could be delivered.
  */
+/**
+ * Recompose the durable final-answer text for an execution from the session
+ * event stream — the same derivation `renderFallbackFinalAnswer` uses, but as
+ * a pure read with no Slack side effects. Used by origin postbacks to fetch
+ * the answer at approval time regardless of how it was originally rendered.
+ */
+async function recomposeFinalAnswerText(
+  options: SlackbotV2Options,
+  source: PostbackSession
+): Promise<string | null> {
+  let stream: AsyncIterable<SlackbotV2RendererSource> | undefined
+  for (let attempt = 0; ; attempt++) {
+    try {
+      stream = await openSessionEventStream(options, {
+        afterEventId: source.afterEventId,
+        executionId: source.executionId,
+        onEventId: () => undefined,
+        threadId: source.threadId
+      })
+      break
+    } catch (error) {
+      if (!isRetryableSessionApiError(error) || attempt + 1 >= FALLBACK_OPEN_MAX_ATTEMPTS) {
+        throw error
+      }
+      await sleep(renderRetryDelayMs(attempt))
+    }
+  }
+  const fallback = new SlackRenderFallback()
+  const chatStream = fallback.collectChatSdk(
+    slackSafeChatSdkStream(
+      codexAppServerToChatSdkStream(fallback.collectSource(stream), fallbackRendererOptions(options))
+    )
+  )
+  for await (const _chunk of chatStream) {
+    void _chunk
+  }
+  if (!fallback.text() && !fallback.isInterrupted()) return null
+  return truncateSlackText(
+    fallback.textOrDefault(),
+    SLACK_FALLBACK_TEXT_MAX_CHARS,
+    'Slack final answer'
+  )
+}
+
 async function renderFallbackFinalAnswer(
   thread: Thread,
   options: SlackbotV2Options,

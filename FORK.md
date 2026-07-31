@@ -23,3 +23,4 @@ line in the PR that syncs it back.
 | 4c9f82b4 | deployment captain: interactively deploy CVI, RQH, and Tavus API through existing GitHub workflows, with complete immutable Centaur runtime rollouts | [#25](https://github.com/Tavus-Engineering/centaur/pull/25) |
 | 3073f098 | sandbox: prune force-disabled [features.*] tables + validate rewritten codex config (fixes duplicate-key crash killing every turn) | [#26](https://github.com/Tavus-Engineering/centaur/pull/26) |
 | aff3a521 | api-rs: resolve NAME=NAME sandbox credential placeholders from api env when iron-proxy is disabled (proxyless egress 401 fix) | [#27](https://github.com/Tavus-Engineering/centaur/pull/27) |
+| 2e0b2dba | slackbotv2: emoji-approved postback of DM investigation answers to the linked origin thread (react ✅ in the DM) | [#28](https://github.com/Tavus-Engineering/centaur/pull/28) |
