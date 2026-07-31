@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test'
+import type { Logger } from 'chat'
 import {
+  CODEX_CHECK_NAME,
   diffForAlerts,
   formatHomeBlocks,
+  IntegrationHealth,
   runHealthChecks,
   statusMap,
   type HealthResult
@@ -103,10 +106,10 @@ describe('diffForAlerts', () => {
 })
 
 describe('formatHomeBlocks', () => {
-  test('renders one line per integration with status and freshness footer', () => {
+  test('renders heartbeat lines, freshness footer, then the usage guide', () => {
     const blocks = formatHomeBlocks(
       [result('SigNoz', 'ok'), result('Coda', 'fail', 'HTTP 401'), result('LogRocket', 'unconfigured')],
-      15 * 60 * 1000
+      12 * 60 * 60 * 1000
     ) as Array<{ type: string; text?: { text: string }; elements?: Array<{ text: string }> }>
     expect(blocks[0]?.type).toBe('header')
     const body = blocks[1]?.text?.text ?? ''
@@ -114,7 +117,61 @@ describe('formatHomeBlocks', () => {
     expect(body).toContain(':red_circle: *Coda* — *DOWN*: HTTP 401')
     expect(body).toContain(':white_circle: *LogRocket* — not configured')
     const footer = blocks[2]?.elements?.[0]?.text ?? ''
-    expect(footer).toContain('re-checked every 15m')
+    expect(footer).toContain('re-checked every 12h')
     expect(footer).toContain('<!date^1785500000^')
+    // Usage guide restored below the heartbeat.
+    const rendered = JSON.stringify(blocks)
+    expect(rendered).toContain('What It Can Do')
+    expect(rendered).toContain('Sample Prompts')
+    expect(rendered).toContain('tavus-investigate-conversation')
+    expect(blocks.length).toBeGreaterThan(10)
+  })
+})
+
+const testLogger: Logger = {
+  child: () => testLogger,
+  debug: () => undefined,
+  error: () => undefined,
+  info: () => undefined,
+  warn: () => undefined
+}
+
+describe('IntegrationHealth codex ping', () => {
+  test('lists the codex sandbox check first, ok when the ping resolves', async () => {
+    const health = new IntegrationHealth({
+      codexPing: async () => undefined,
+      env: {},
+      fetchImpl: (async () => okFetch('')) as unknown as typeof fetch,
+      logger: testLogger
+    })
+    const results = await health.runCycle()
+    expect(results[0]?.name).toBe(CODEX_CHECK_NAME)
+    expect(results[0]?.status).toBe('ok')
+  })
+
+  test('marks the codex check failed with the thrown error', async () => {
+    const health = new IntegrationHealth({
+      codexPing: async () => {
+        throw new Error('sandbox spawn failed')
+      },
+      env: {},
+      fetchImpl: (async () => okFetch('')) as unknown as typeof fetch,
+      logger: testLogger
+    })
+    const results = await health.runCycle()
+    expect(results[0]?.status).toBe('fail')
+    expect(results[0]?.error).toBe('sandbox spawn failed')
+  })
+
+  test('shows unconfigured without a ping callback and defaults to 12h', async () => {
+    const health = new IntegrationHealth({
+      env: {},
+      fetchImpl: (async () => okFetch('')) as unknown as typeof fetch,
+      logger: testLogger
+    })
+    expect(health.intervalMs).toBe(12 * 60 * 60 * 1000)
+    const results = await health.runCycle()
+    expect(results[0]?.name).toBe(CODEX_CHECK_NAME)
+    expect(results[0]?.status).toBe('unconfigured')
   })
 })

@@ -218,7 +218,10 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     logger
   })
   const lateSlackFiles = createLateSlackFileRepair(options, state)
-  const integrationHealth = new IntegrationHealth({ logger })
+  const integrationHealth = new IntegrationHealth({
+    codexPing: () => codexSandboxPing(options),
+    logger
+  })
   integrationHealth.start()
   originPostback.bind({
     chat: chat as unknown as Chat,
@@ -1332,6 +1335,78 @@ const FALLBACK_OPEN_MAX_ATTEMPTS = 4
  * result text once. Slack streaming is best-effort; this is the delivery
  * guarantee. Returns null when nothing could be delivered.
  */
+const CODEX_PING_TIMEOUT_MS = 6 * 60 * 1000
+
+/**
+ * End-to-end codex sandbox health ping: run a real session turn on a fresh
+ * throwaway thread (create session -> execute -> stream events) and require a
+ * non-empty final answer. Exercises the api-rs control plane, sandbox
+ * spawn/claim, the baked harness config, and model credentials — the same
+ * pipeline every Slack request uses. A fresh thread id per ping avoids
+ * replaying an ever-growing event history.
+ */
+async function codexSandboxPing(options: SlackbotV2Options): Promise<void> {
+  const threadId = `slackbotv2:health:codex-ping:${Date.now()}`
+  const message: SlackbotV2ApiMessage = {
+    attachments: [],
+    author: {
+      fullName: 'Integration Heartbeat',
+      isBot: true,
+      isMe: false,
+      userId: 'integration-heartbeat',
+      userName: 'integration-heartbeat'
+    },
+    id: `health-${randomUUID()}`,
+    isMention: false,
+    raw: {},
+    teamId: 'health',
+    text: 'Health check ping. Reply with the single word: pong. Do not use any tools.',
+    threadId,
+    timestamp: new Date().toISOString()
+  }
+  const ping = (async () => {
+    const stream = await forwardToSessionApi(options, {
+      afterEventId: 0,
+      executeMessage: message,
+      messages: [message],
+      onEventId: () => undefined,
+      openStream: true,
+      threadId
+    })
+    if (!stream) throw new Error('session API returned no event stream')
+    const fallback = new SlackRenderFallback()
+    const chatStream = fallback.collectChatSdk(
+      slackSafeChatSdkStream(
+        codexAppServerToChatSdkStream(
+          fallback.collectSource(stream),
+          fallbackRendererOptions(options)
+        )
+      )
+    )
+    for await (const _chunk of chatStream) {
+      void _chunk
+    }
+    if (!fallback.text()) throw new Error('turn produced no final answer')
+  })()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      ping,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`codex ping timed out after ${CODEX_PING_TIMEOUT_MS}ms`)),
+          CODEX_PING_TIMEOUT_MS
+        )
+      })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+    // Detach the underlying task so a timeout does not leave an unhandled
+    // rejection behind.
+    ping.catch(() => undefined)
+  }
+}
+
 /**
  * Recompose the durable final-answer text for an execution from the session
  * event stream — the same derivation `renderFallbackFinalAnswer` uses, but as

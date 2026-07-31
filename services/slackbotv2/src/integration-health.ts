@@ -1,4 +1,5 @@
 import type { Logger } from 'chat'
+import { usageGuideBlocks } from './home-view'
 
 /**
  * Integration heartbeat: periodically checks each external integration the
@@ -31,7 +32,8 @@ type Env = Record<string, string | undefined>
 type FetchLike = typeof globalThis.fetch
 
 const CHECK_TIMEOUT_MS = 10_000
-export const DEFAULT_INTERVAL_MS = 15 * 60 * 1000
+export const DEFAULT_INTERVAL_MS = 12 * 60 * 60 * 1000
+export const CODEX_CHECK_NAME = 'Codex sandbox'
 
 type CheckSpec = {
   name: string
@@ -197,7 +199,6 @@ export function formatHomeBlocks(results: HealthResult[], intervalMs: number): u
     return `${emoji} *${result.name}* — *DOWN*: ${result.error}`
   })
   const checkedAt = Math.floor((results[0]?.checkedAtMs ?? Date.now()) / 1000)
-  const intervalMinutes = Math.round(intervalMs / 60_000)
   return [
     {
       type: 'header',
@@ -211,11 +212,17 @@ export function formatHomeBlocks(results: HealthResult[], intervalMs: number): u
           type: 'mrkdwn',
           text:
             `Last checked <!date^${checkedAt}^{date_short_pretty} {time}|just now> · ` +
-            `re-checked every ${intervalMinutes}m · alerts DM on break/recover`
+            `re-checked every ${formatInterval(intervalMs)} · alerts DM on break/recover`
         }
       ]
-    }
+    },
+    ...usageGuideBlocks()
   ]
+}
+
+function formatInterval(intervalMs: number): string {
+  if (intervalMs >= 60 * 60 * 1000) return `${Math.round(intervalMs / (60 * 60 * 1000))}h`
+  return `${Math.round(intervalMs / 60_000)}m`
 }
 
 /** Break/recover transition messages, comparing against the previous cycle. */
@@ -247,6 +254,12 @@ export type IntegrationHealthOptions = {
   env?: Env
   fetchImpl?: FetchLike
   intervalMs?: number
+  /**
+   * End-to-end codex sandbox ping (spawn a session turn, expect an answer).
+   * Listed first on the board. Undefined -> shown as not configured. The
+   * callback owns its own timeout; a throw marks the check failed.
+   */
+  codexPing?: () => Promise<void>
 }
 
 export class IntegrationHealth {
@@ -258,11 +271,39 @@ export class IntegrationHealth {
   private latest: HealthResult[] = []
   private timer?: ReturnType<typeof setInterval>
 
+  private readonly codexPing?: () => Promise<void>
+
   constructor(options: IntegrationHealthOptions) {
     this.logger = options.logger
     this.env = options.env ?? process.env
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch
     this.intervalMs = options.intervalMs ?? intervalFromEnv(this.env)
+    this.codexPing = options.codexPing
+  }
+
+  private async runCodexCheck(): Promise<HealthResult> {
+    const checkedAtMs = Date.now()
+    if (!this.codexPing) {
+      return { name: CODEX_CHECK_NAME, status: 'unconfigured', checkedAtMs }
+    }
+    const startedAtMs = Date.now()
+    try {
+      await this.codexPing()
+      return {
+        name: CODEX_CHECK_NAME,
+        status: 'ok',
+        latencyMs: Date.now() - startedAtMs,
+        checkedAtMs
+      }
+    } catch (error) {
+      return {
+        name: CODEX_CHECK_NAME,
+        status: 'fail',
+        latencyMs: Date.now() - startedAtMs,
+        error: error instanceof Error ? error.message : String(error),
+        checkedAtMs
+      }
+    }
   }
 
   get alertUserIds(): string[] {
@@ -273,8 +314,13 @@ export class IntegrationHealth {
   }
 
   start(): void {
-    if (this.env.SLACKBOT_HEALTH_ENABLED === 'false') {
-      this.logger.info('slackbotv2_health_disabled', {})
+    // Without an audience there is nothing to publish or alert, so stay off —
+    // this also keeps the heartbeat (and its codex ping) out of test harnesses
+    // that instantiate the bot without SLACKBOT_HEALTH_ALERT_USERS.
+    if (this.env.SLACKBOT_HEALTH_ENABLED === 'false' || this.alertUserIds.length === 0) {
+      this.logger.info('slackbotv2_health_disabled', {
+        alert_users_configured: this.alertUserIds.length
+      })
       return
     }
     void this.runCycle()
@@ -292,7 +338,11 @@ export class IntegrationHealth {
 
   async runCycle(): Promise<HealthResult[]> {
     try {
-      const results = await runHealthChecks(this.env, this.fetchImpl)
+      const [codex, rest] = await Promise.all([
+        this.runCodexCheck(),
+        runHealthChecks(this.env, this.fetchImpl)
+      ])
+      const results = [codex, ...rest]
       this.latest = results
       const alerts = diffForAlerts(this.previous, results)
       this.previous = statusMap(results)
