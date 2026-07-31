@@ -33,6 +33,7 @@ import {
   type PostbackSession
 } from './origin-postback'
 import { IntegrationHealth } from './integration-health'
+import { DmParticipationGuard } from './dm-guard'
 import { renderSlackDisplayText, slackMessagePromptText } from './slack-display-text'
 import { slackUserIdForMessage } from './slack-user'
 import {
@@ -229,8 +230,11 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     recomposeAnswer: session => recomposeFinalAnswerText(options, session)
   })
 
+  const dmGuard = new DmParticipationGuard({ botToken: options.botToken, logger })
+
   chat.onNewMention(async (thread, message) => {
     if (!isAllowedSlackMessage(message, options, logger)) return
+    if (!(await dmGuard.allows(thread.id))) return
     lateSlackFiles.rememberFilelessMention(thread, message)
     await handleSlackMessageHandoff(thread, message, {
       assistantStatusRequested: true,
@@ -244,6 +248,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
 
   chat.onSubscribedMessage(async (thread, message) => {
     if (!isAllowedSlackMessage(message, options, logger)) return
+    if (!(await dmGuard.allows(thread.id))) return
     lateSlackFiles.rememberFilelessMention(thread, message)
     await handleSlackMessageHandoff(thread, message, {
       assistantStatusRequested: message.isMention === true,
