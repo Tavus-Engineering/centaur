@@ -32,6 +32,7 @@ import {
   slackChannelFromThreadId,
   type PostbackSession
 } from './origin-postback'
+import { IntegrationHealth } from './integration-health'
 import { renderSlackDisplayText, slackMessagePromptText } from './slack-display-text'
 import { slackUserIdForMessage } from './slack-user'
 import {
@@ -217,6 +218,8 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     logger
   })
   const lateSlackFiles = createLateSlackFileRepair(options, state)
+  const integrationHealth = new IntegrationHealth({ logger })
+  integrationHealth.start()
   originPostback.bind({
     chat: chat as unknown as Chat,
     logger,
@@ -318,6 +321,9 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
         // after the SDK accepted the request (signature verified).
         const postbackTask = originPostback.handleWebhookBody(rawBody)
         if (postbackTask) waitUntil(c, postbackTask)
+        // Refresh the integration-heartbeat board when a user opens App Home.
+        const homeTask = integrationHealth.handleWebhookBody(rawBody)
+        if (homeTask) waitUntil(c, homeTask)
       }
       const lateFileTask = lateSlackFiles.repairFromWebhook(rawBody)
       if (lateFileTask) waitUntil(c, lateFileTask)
