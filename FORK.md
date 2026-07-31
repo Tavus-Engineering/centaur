@@ -26,3 +26,4 @@ line in the PR that syncs it back.
 | 2e0b2dba | slackbotv2: emoji-approved postback of DM investigation answers to the linked origin thread (react ✅ in the DM) | [#28](https://github.com/Tavus-Engineering/centaur/pull/28) |
 | ff2901c6 | slackbotv2: integration heartbeat — App Home status board + break/recover DM alerts for SigNoz/Coda/Linear/Slack/GitHub/Braintrust/LogRocket | [#29](https://github.com/Tavus-Engineering/centaur/pull/29) |
 | 3ba0bebe | slackbotv2: heartbeat codex sandbox ping-pong + restored App Home usage guide + 12h cadence | [#30](https://github.com/Tavus-Engineering/centaur/pull/30) |
+| 552fa6c7 | slackbotv2: heartbeat boot-race fix — 60s startup delay + one re-verify pass before alerting | [#31](https://github.com/Tavus-Engineering/centaur/pull/31) |
