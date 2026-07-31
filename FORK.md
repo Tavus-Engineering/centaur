@@ -25,3 +25,4 @@ line in the PR that syncs it back.
 | aff3a521 | api-rs: resolve NAME=NAME sandbox credential placeholders from api env when iron-proxy is disabled (proxyless egress 401 fix) | [#27](https://github.com/Tavus-Engineering/centaur/pull/27) |
 | 2e0b2dba | slackbotv2: emoji-approved postback of DM investigation answers to the linked origin thread (react ✅ in the DM) | [#28](https://github.com/Tavus-Engineering/centaur/pull/28) |
 | ff2901c6 | slackbotv2: integration heartbeat — App Home status board + break/recover DM alerts for SigNoz/Coda/Linear/Slack/GitHub/Braintrust/LogRocket | [#29](https://github.com/Tavus-Engineering/centaur/pull/29) |
+| 3ba0bebe | slackbotv2: heartbeat codex sandbox ping-pong + restored App Home usage guide + 12h cadence | [#30](https://github.com/Tavus-Engineering/centaur/pull/30) |
