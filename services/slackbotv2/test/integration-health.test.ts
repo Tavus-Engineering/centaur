@@ -149,18 +149,37 @@ describe('IntegrationHealth codex ping', () => {
     expect(results[0]?.status).toBe('ok')
   })
 
-  test('marks the codex check failed with the thrown error', async () => {
+  test('marks the codex check failed with the thrown error after one re-verify', async () => {
+    let attempts = 0
     const health = new IntegrationHealth({
       codexPing: async () => {
+        attempts++
         throw new Error('sandbox spawn failed')
       },
-      env: {},
+      env: { SLACKBOT_HEALTH_RETRY_DELAY_MS: '0' },
       fetchImpl: (async () => okFetch('')) as unknown as typeof fetch,
       logger: testLogger
     })
     const results = await health.runCycle()
     expect(results[0]?.status).toBe('fail')
     expect(results[0]?.error).toBe('sandbox spawn failed')
+    expect(attempts).toBe(2)
+  })
+
+  test('a transient codex failure recovers on the re-verify pass without alerting', async () => {
+    let attempts = 0
+    const health = new IntegrationHealth({
+      codexPing: async () => {
+        attempts++
+        if (attempts === 1) throw new Error('transient connect error')
+      },
+      env: { SLACKBOT_HEALTH_RETRY_DELAY_MS: '0' },
+      fetchImpl: (async () => okFetch('')) as unknown as typeof fetch,
+      logger: testLogger
+    })
+    const results = await health.runCycle()
+    expect(results[0]?.status).toBe('ok')
+    expect(attempts).toBe(2)
   })
 
   test('shows unconfigured without a ping callback and defaults to 12h', async () => {
