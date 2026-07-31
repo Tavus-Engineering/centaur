@@ -151,10 +151,11 @@ const CHECKS: CheckSpec[] = [
 
 export async function runHealthChecks(
   env: Env,
-  fetchImpl: FetchLike = globalThis.fetch
+  fetchImpl: FetchLike = globalThis.fetch,
+  names?: ReadonlySet<string>
 ): Promise<HealthResult[]> {
   return Promise.all(
-    CHECKS.map(async (check): Promise<HealthResult> => {
+    CHECKS.filter(check => !names || names.has(check.name)).map(async (check): Promise<HealthResult> => {
       const checkedAtMs = Date.now()
       if (!check.configured(env)) {
         return { name: check.name, status: 'unconfigured', checkedAtMs }
@@ -323,12 +324,19 @@ export class IntegrationHealth {
       })
       return
     }
-    void this.runCycle()
-    this.timer = setInterval(() => void this.runCycle(), this.intervalMs)
-    this.timer.unref?.()
+    // Defer the first cycle: probing one second after container start races
+    // pod networking and produced a false "Codex sandbox DOWN" page.
+    const startupDelayMs = startupDelayFromEnv(this.env)
+    const firstCycle = setTimeout(() => {
+      void this.runCycle()
+      this.timer = setInterval(() => void this.runCycle(), this.intervalMs)
+      this.timer.unref?.()
+    }, startupDelayMs)
+    firstCycle.unref?.()
     this.logger.info('slackbotv2_health_started', {
       alert_users: this.alertUserIds.join(','),
-      interval_ms: this.intervalMs
+      interval_ms: this.intervalMs,
+      startup_delay_ms: startupDelayMs
     })
   }
 
@@ -338,10 +346,27 @@ export class IntegrationHealth {
 
   async runCycle(): Promise<HealthResult[]> {
     try {
-      const [codex, rest] = await Promise.all([
+      let [codex, rest] = await Promise.all([
         this.runCodexCheck(),
         runHealthChecks(this.env, this.fetchImpl)
       ])
+      // Re-verify failures once after a short pause before paging: a 12h
+      // cadence should not alert on one transient blip.
+      const failedNames = new Set(rest.filter(r => r.status === 'fail').map(r => r.name))
+      if (codex.status === 'fail' || failedNames.size > 0) {
+        this.logger.info('slackbotv2_health_reverifying_failures', {
+          failed: [codex.status === 'fail' ? codex.name : undefined, ...failedNames]
+            .filter(Boolean)
+            .join(',')
+        })
+        await sleepMs(retryDelayFromEnv(this.env))
+        if (codex.status === 'fail') codex = await this.runCodexCheck()
+        if (failedNames.size > 0) {
+          const retried = await runHealthChecks(this.env, this.fetchImpl, failedNames)
+          const byName = new Map(retried.map(r => [r.name, r]))
+          rest = rest.map(r => byName.get(r.name) ?? r)
+        }
+      }
       const results = [codex, ...rest]
       this.latest = results
       const alerts = diffForAlerts(this.previous, results)
@@ -455,4 +480,18 @@ export class IntegrationHealth {
 function intervalFromEnv(env: Env): number {
   const parsed = Number(env.SLACKBOT_HEALTH_INTERVAL_MS)
   return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : DEFAULT_INTERVAL_MS
+}
+
+function startupDelayFromEnv(env: Env): number {
+  const parsed = Number(env.SLACKBOT_HEALTH_STARTUP_DELAY_MS)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60_000
+}
+
+function retryDelayFromEnv(env: Env): number {
+  const parsed = Number(env.SLACKBOT_HEALTH_RETRY_DELAY_MS)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 15_000
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
