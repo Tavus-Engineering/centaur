@@ -1014,6 +1014,8 @@ impl SandboxArgs {
             }
         }
 
+        self.resolve_placeholder_env(&mut envs);
+
         for name in self.passthrough_env_names() {
             if let Ok(value) = env::var(name) {
                 if let Some((_, existing_value)) = envs
@@ -1043,6 +1045,29 @@ impl SandboxArgs {
         }
 
         Ok(envs)
+    }
+
+    /// With iron-proxy active, sandboxes get `NAME=NAME` placeholder
+    /// credentials and the proxy substitutes the real secret at egress. With
+    /// the proxy disabled (proxyless egress) nothing performs that swap, so
+    /// consumers would send the literal placeholder upstream — codex's
+    /// `OPENAI_API_KEY` gets a 401 on every request. Resolve each placeholder
+    /// from this process's environment instead; names with no real value keep
+    /// the placeholder so downstream behavior is unchanged.
+    fn resolve_placeholder_env(&self, envs: &mut [(String, String)]) {
+        // A misconfigured proxy (`Err`) fails startup elsewhere; keeping the
+        // placeholders here preserves the existing behavior for that path.
+        let proxy_active = !matches!(self.iron_proxy.to_config(), Ok(None));
+        if proxy_active {
+            return;
+        }
+        for (name, value) in envs.iter_mut() {
+            if value == name
+                && let Some(real) = clean_optional_value(env::var(name.as_str()).ok().as_deref())
+            {
+                *value = real;
+            }
+        }
     }
 
     /// `SESSION_SANDBOX_EXTRA_ENV` parsed as a JSON list of `{"name","value"}`
@@ -1156,6 +1181,8 @@ impl SandboxArgs {
         {
             envs.push(("TOOLS_OVERLAY_PATH".to_owned(), value));
         }
+
+        self.resolve_placeholder_env(&mut envs);
 
         for name in self.passthrough_env_names() {
             if let Ok(value) = env::var(name) {
@@ -2481,6 +2508,8 @@ mod tests {
             ),
             ("SLACK_ETL_ENABLED", "true"),
             ("SLACK_BACKFILL_ENABLED", "true"),
+            ("GITHUB_TOKEN", "ghp-proxyless-real"),
+            ("SLACK_BOT_TOKEN", "xoxb-proxyless-real"),
         ]);
         let args = Args::try_parse_from([
             "centaur-api-server",
@@ -2518,19 +2547,45 @@ mod tests {
                 .map(|env| env.value.as_str()),
             Some("true")
         );
+        // Iron-proxy is disabled here, so the NAME=NAME placeholders resolve
+        // to the real values from this process's environment.
         assert_eq!(
             spec.env
                 .iter()
                 .find(|env| env.name == GITHUB_TOKEN_ENV)
                 .map(|env| env.value.as_str()),
-            Some(GITHUB_TOKEN_ENV)
+            Some("ghp-proxyless-real")
         );
         assert_eq!(
             spec.env
                 .iter()
                 .find(|env| env.name == SLACK_BOT_TOKEN_ENV)
                 .map(|env| env.value.as_str()),
-            Some(SLACK_BOT_TOKEN_ENV)
+            Some("xoxb-proxyless-real")
+        );
+    }
+
+    #[test]
+    fn codex_app_server_env_template_resolves_placeholders_without_iron_proxy() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(&[("OPENAI_API_KEY", "sk-proxyless-real")]);
+        let args = Args::try_parse_from([
+            "centaur-api-server",
+            "--database-url",
+            "postgres://postgres:postgres@localhost/centaur",
+            "--session-sandbox-workload",
+            "codex-app-server",
+            "--session-sandbox-centaur-api-url",
+            "http://host.docker.internal:8080",
+            "--kubernetes-sandbox-iron-proxy-mode",
+            "disabled",
+        ])
+        .unwrap();
+
+        let env = args.sandbox.codex_app_server_env_template().unwrap();
+        assert!(
+            env.iter()
+                .any(|(name, value)| name == "OPENAI_API_KEY" && value == "sk-proxyless-real")
         );
     }
 
