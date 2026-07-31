@@ -21,3 +21,4 @@ line in the PR that syncs it back.
 | 5301a4f1 | slackbot: read full routed DM metadata payloads before posting approved results back | [#22](https://github.com/Tavus-Engineering/centaur/pull/22) |
 | 866b8047 | slackbot: restore fork slackbot (v1) dropped by the upstream sync and strip the DM-only "post this answer?" question from results posted back to public threads | [#24](https://github.com/Tavus-Engineering/centaur/pull/24) |
 | 4c9f82b4 | deployment captain: interactively deploy CVI, RQH, and Tavus API through existing GitHub workflows, with complete immutable Centaur runtime rollouts | [#25](https://github.com/Tavus-Engineering/centaur/pull/25) |
+| 3073f098 | sandbox: prune force-disabled [features.*] tables + validate rewritten codex config (fixes duplicate-key crash killing every turn) | [#26](https://github.com/Tavus-Engineering/centaur/pull/26) |
