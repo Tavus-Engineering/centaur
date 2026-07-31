@@ -171,6 +171,26 @@ if summary:
         else:
             lines.insert(first_section, override)
 
+feature_names = {"multi_agent", "multi_agent_v2"}
+
+# Drop `[features.<name>]` table blocks for the features forced off below.
+# Leaving such a table in place while appending the scalar `<name> = false`
+# produces a duplicate TOML key, which codex treats as a fatal config error --
+# every turn then fails before it starts.
+pruned = []
+skipping = False
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("["):
+        header = stripped.strip("[]").strip()
+        skipping = any(
+            header == f"features.{name}" or header.startswith(f"features.{name}.")
+            for name in feature_names
+        )
+    if not skipping:
+        pruned.append(line)
+lines = pruned
+
 features_start = next((i for i, line in enumerate(lines) if line.strip() == "[features]"), None)
 if features_start is None:
     lines.extend(["", "[features]", "multi_agent = false", "multi_agent_v2 = false"])
@@ -179,7 +199,6 @@ else:
         (i for i in range(features_start + 1, len(lines)) if lines[i].lstrip().startswith("[")),
         len(lines),
     )
-    feature_names = {"multi_agent", "multi_agent_v2"}
     seen = set()
     rewritten = []
     for line in lines[features_start + 1 : features_end]:
@@ -269,6 +288,21 @@ if overlay_raw:
         print(f"ignoring invalid CODEX_CONFIG_OVERLAY: {exc}", file=sys.stderr)
     else:
         text = tomli_w.dumps(merged)
+
+# Never install a config codex cannot parse: a bad rewrite above (or a baked
+# config that interacts badly with one) would otherwise fail every turn in the
+# sandbox with `failed to load configuration`. Fall back to the untouched baked
+# config, which is at worst missing the env-driven overrides.
+import tomllib as _tomllib_final
+
+try:
+    _tomllib_final.loads(text)
+except _tomllib_final.TOMLDecodeError as exc:
+    print(
+        f"rewritten codex config is invalid TOML ({exc}); keeping baked config",
+        file=sys.stderr,
+    )
+    text = path.read_text()
 
 path.write_text(text)
 PYEOF
