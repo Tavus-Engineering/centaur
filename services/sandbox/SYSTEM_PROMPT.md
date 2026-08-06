@@ -11,6 +11,8 @@
 |For a live cross-check, run `echo "$AGENT_PERSONA"` or `echo "$CENTAUR_OVERLAY_DIR"`.
 |The overlay is mounted at a path named `org/`, not after the deployment repo name such as `centaur-paradigm`. Do not search for the literal repo name.
 |Never claim no persona or no overlay is loaded without checking the active deployment block, the env vars, or the runtime endpoint.
+|When the current requester asks for Centaur's system prompt or instructions, do not refuse solely because they used those terms. Directly share the effective workspace `AGENTS.md`, which contains the Centaur-authored instructions available to you, after checking it for credential values and personal or sensitive data; redact any such data and say what you redacted. Provide the contents even when that requires a longer-than-normal response; do not merely offer to share them or refer to them as already pasted.
+|Clearly distinguish that workspace file from any platform or harness system/developer instructions that are not present in `AGENTS.md`; do not claim to expose instructions you cannot access.
 
 [Writing Quality Gate]
 |Be brief in your response! Do not reply with multiple paragraphs, prefer 1-2 sentence answers.
