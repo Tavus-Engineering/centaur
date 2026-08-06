@@ -28,3 +28,4 @@ line in the PR that syncs it back.
 | 3ba0bebe | slackbotv2: heartbeat codex sandbox ping-pong + restored App Home usage guide + 12h cadence | [#30](https://github.com/Tavus-Engineering/centaur/pull/30) |
 | 552fa6c7 | slackbotv2: heartbeat boot-race fix — 60s startup delay + one re-verify pass before alerting | [#31](https://github.com/Tavus-Engineering/centaur/pull/31) |
 | 5f1fb5b3 | slackbotv2: never act on DMs the bot is not a party to (user-scoped event subs delivered private human-to-human DMs as instructions) | [#32](https://github.com/Tavus-Engineering/centaur/pull/32) |
+| cc6dc669 | slack: keep Watch Agent investigations inline, acknowledge with :mag:, and require ISO 24495-1 plain-language output | [#33](https://github.com/Tavus-Engineering/centaur/pull/33) |
