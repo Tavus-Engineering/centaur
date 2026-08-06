@@ -146,6 +146,7 @@ const LATE_SLACK_FILE_CONSUMED_TTL_MS = 5 * 60_000
 const LATE_SLACK_FILE_IDLE_WAIT_MS = 90_000
 const LATE_SLACK_FILE_IDLE_POLL_MS = 500
 const LATE_SLACK_FILE_MESSAGE_TEXT = 'Late Slack file attachment for the previous message.'
+const INVESTIGATING_REACTION = 'mag'
 
 type PendingLateSlackFileMention = {
   channel: string
@@ -394,6 +395,9 @@ async function handleSlackMessageHandoff(
     if (await handleStopCommand(thread, message, input.options, input.trigger)) {
       return
     }
+    if (input.assistantStatusRequested && !thread.isDM) {
+      await acknowledgeInvestigation(thread, message, input.options, trace)
+    }
     if (input.mode === 'execute' && isSlackDmThreadId(thread.id)) {
       const requesterUserId = slackUserIdForMessage(message)
       const origin = extractSlackOrigin(message.text, slackChannelFromThreadId(thread.id))
@@ -434,6 +438,27 @@ async function handleSlackMessageHandoff(
         .catch(() => undefined)
     )
     throw error
+  }
+}
+
+async function acknowledgeInvestigation(
+  thread: Thread<SlackbotV2ThreadState>,
+  message: ChatMessage,
+  options: SlackbotV2Options,
+  trace: SlackbotV2Trace
+): Promise<void> {
+  try {
+    await thread.adapter.addReaction(thread.id, message.id, INVESTIGATING_REACTION)
+    traceLog(options, 'slackbotv2_investigating_reaction_added', trace, {
+      emoji: INVESTIGATING_REACTION,
+      message_id: message.id
+    })
+  } catch (error) {
+    traceWarn(options, 'slackbotv2_investigating_reaction_failed', trace, {
+      emoji: INVESTIGATING_REACTION,
+      error: errorMessage(error),
+      message_id: message.id
+    })
   }
 }
 
