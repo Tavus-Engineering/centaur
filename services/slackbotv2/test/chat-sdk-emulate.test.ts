@@ -69,11 +69,17 @@ beforeAll(async () => {
       tokens: {
         [BOT_TOKEN]: {
           login: BOT_USER_ID,
-          scopes: ['assistant:write', 'chat:write', 'channels:read', 'users:read']
+          scopes: [
+            'assistant:write',
+            'chat:write',
+            'channels:read',
+            'reactions:write',
+            'users:read'
+          ]
         },
         [USER_TOKEN]: {
           login: USER_ID,
-          scopes: ['chat:write', 'channels:read', 'users:read']
+          scopes: ['chat:write', 'channels:read', 'reactions:read', 'users:read']
         },
         [USER_B_TOKEN]: {
           login: USER_B_ID,
@@ -114,7 +120,7 @@ afterAll(async () => {
 })
 
 describe('slackbotv2', () => {
-  it('accepts Slack events on the legacy route', async () => {
+  it('acknowledges a thread mention with mag and replies inline on the legacy route', async () => {
     const parent = await postUserMessage('Legacy route context.')
     const mention = await postUserMessage(`<@${BOT_USER_ID}> use the legacy route`, parent.ts)
     const waits: Promise<unknown>[] = []
@@ -140,6 +146,20 @@ describe('slackbotv2', () => {
     await Promise.all(waits)
     expect(codexApi.executes).toHaveLength(1)
     expect(codexApi.executes[0]?.threadKey).toBe(threadKey(parent.ts))
+    const reactions = await slack.reactions.get({
+      channel: CHANNEL_ID,
+      timestamp: mention.ts
+    })
+    expect(reactions.message?.reactions).toContainEqual(
+      expect.objectContaining({
+        name: 'mag',
+        users: expect.arrayContaining([BOT_USER_ID])
+      })
+    )
+    expect(slackStreamTranscripts(slackApi.calls)[0]?.start.body).toMatchObject({
+      channel: CHANNEL_ID,
+      thread_ts: parent.ts
+    })
   })
 
   it('syncs thread context, forwards subscribed messages, and renders execute streams', async () => {

@@ -339,14 +339,14 @@ Do not replace this flow with ad hoc `helm upgrade` commands unless `make deploy
 is broken and the user explicitly approves the fallback. If a fallback is used,
 preserve all existing Helm values and report exactly what was run.
 
-### Deploying to `samuel-a100`
+### Deploying to `samuel-l40s`
 
-`samuel-a100` is a shared production host. It also runs a request-handler preview
+`samuel-l40s` is a shared production host. It also runs request-handler preview
 stack in Docker, so keep Centaur isolated in the existing k3s namespace and do not
 stop or repurpose non-Centaur containers. The Centaur checkout is:
 
 ```bash
-ssh samuel-a100
+ssh samuel-l40s
 cd ~/projects/centaur
 ```
 

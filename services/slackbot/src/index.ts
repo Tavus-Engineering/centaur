@@ -16,12 +16,7 @@ import {
   spanAttributes,
   withSpan
 } from './otel'
-import {
-  AgentSessionRenderer,
-  agentSessionTarget,
-  hasAgentSession,
-  withAgentSessionLock
-} from './slack/agent-session'
+import { AgentSessionRenderer, hasAgentSession, withAgentSessionLock } from './slack/agent-session'
 import { authorizeSlackOrg } from './slack/authorization'
 import { CodexSessionRenderer, hasActiveCodexSession } from './slack/codex-session'
 import { EventDeduper, slackDedupKeys } from './slack/dedup'
@@ -31,11 +26,7 @@ import { EnvSlackInstallationStore, SlackClientResolver } from './slack/installa
 import { normalizeSlackEnvelope } from './slack/normalize'
 import { markdownToStreamChunks } from './slack/render'
 import { verifySlackSignature } from './slack/signature'
-import {
-  maybePublishApprovedDmResultToThread,
-  maybePromptRoutedDmPostback,
-  routeThreadMentionToDm
-} from './slack/thread-routing'
+import { acknowledgeThreadInvestigation } from './slack/thread-acknowledgement'
 import { shouldAckWithReaction } from './slack/trivial-ack'
 import type { NormalizedSlackEvent, SlackEnvelope } from './slack/types'
 import type { AnyBlock, AnyChunk } from '@slack/types'
@@ -402,7 +393,6 @@ app.post('/api/slack/agent-sessions/:session_id/done', apiKeyMiddleware, async c
   const { client } = await resolver.resolve({})
   try {
     const sessionId = c.req.param('session_id')
-    const target = agentSessionTarget(sessionId)
     if (hasActiveCodexSession(sessionId) || hasAgentSession(sessionId)) {
       await withAgentSessionLock(sessionId, async () => {
         if (hasActiveCodexSession(sessionId)) {
@@ -410,13 +400,6 @@ app.post('/api/slack/agent-sessions/:session_id/done', apiKeyMiddleware, async c
         } else {
           await new AgentSessionRenderer(client).done(sessionId)
         }
-      })
-    }
-    if (body.status === 'completed' && target) {
-      await promptRoutedDmPostback({
-        client,
-        channelId: target.channel,
-        threadTs: target.parentTs
       })
     }
     return c.json({ ok: true })
@@ -438,22 +421,6 @@ app.post('/api/slack/agent-sessions/:session_id/harness-event', apiKeyMiddleware
     return slackApiErrorResponse(c, error)
   }
 })
-
-async function promptRoutedDmPostback(opts: {
-  client: WebClient
-  channelId: string
-  threadTs: string
-}): Promise<void> {
-  try {
-    await maybePromptRoutedDmPostback(opts)
-  } catch (error) {
-    logWarn('slack_routed_dm_postback_prompt_failed', {
-      channel_id: opts.channelId,
-      thread_ts: opts.threadTs,
-      error: sanitizeLogValue(error)
-    })
-  }
-}
 
 app.post('/api/slack/assistant/status', apiKeyMiddleware, async c => {
   const body = await c.req.json<{
@@ -610,7 +577,7 @@ async function processSlackEvent(envelope: SlackEnvelope): Promise<void> {
         teamId: envelope.team_id,
         enterpriseId: envelope.enterprise_id
       })
-      let normalized = await normalizeSlackEnvelope({
+      const normalized = await normalizeSlackEnvelope({
         envelope,
         botUserId: installation.botUserId,
         botId: installation.botId,
@@ -641,31 +608,6 @@ async function processSlackEvent(envelope: SlackEnvelope): Promise<void> {
         return
       }
 
-      const publishedDmResult = await maybePublishApprovedDmResultToThread({
-        client,
-        event: normalized,
-        latestPostableResult: threadKey => handoff.latestPostableExecutionResult(threadKey)
-      })
-      if (publishedDmResult) {
-        spanAttributes(span, {
-          'centaur.slackbot.event_action': 'publish_dm_result_to_thread'
-        })
-        return
-      }
-
-      const routed = await routeThreadMentionToDm(client, normalized)
-      if (routed !== normalized) {
-        normalized = routed
-        spanAttributes(span, {
-          'centaur.thread_key': normalized.thread_key,
-          'slack.channel_id': normalized.channel_id,
-          'slack.thread_ts': normalized.thread_ts,
-          'centaur.slackbot.route_mode': normalized.route?.mode,
-          'centaur.slackbot.route_source_channel_id': normalized.route?.source_channel_id,
-          'centaur.slackbot.route_source_thread_ts': normalized.route?.source_thread_ts
-        })
-      }
-
       if (shouldAckWithReaction(normalized)) {
         spanAttributes(span, {
           'centaur.slackbot.event_action': 'ack_reaction'
@@ -673,6 +615,8 @@ async function processSlackEvent(envelope: SlackEnvelope): Promise<void> {
         await ackWithReaction(client, normalized)
         return
       }
+
+      await acknowledgeThreadInvestigation(client, normalized)
 
       spanAttributes(span, {
         'centaur.slackbot.event_action': 'handoff'
