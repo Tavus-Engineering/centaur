@@ -6,9 +6,15 @@ CENTAUR_CHART ?= contrib/chart
 CENTAUR_API_IMAGE_REPOSITORY ?= centaur-api-tavus
 CENTAUR_SANDBOX_IMAGE_REPOSITORY ?= centaur-agent-tavus
 CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY ?= centaur-slackbotv2-tavus
+CENTAUR_CONSOLE_IMAGE_REPOSITORY ?= centaur-console-tavus
+CENTAUR_IRON_PROXY_IMAGE_REPOSITORY ?= centaur-iron-proxy-tavus
 CENTAUR_TOOLS_REPOSITORY ?= Tavus-Engineering/centaur
 CENTAUR_K3S_CTR ?= sudo k3s ctr
 CENTAUR_API_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-api-rs
+CENTAUR_SLACKBOTV2_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-slackbotv2
+CENTAUR_CONSOLE_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console
+CENTAUR_CONSOLE_WORKER_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console-worker
+CENTAUR_REPO_CACHE_DAEMONSET ?= $(CENTAUR_RELEASE)-centaur-repo-cache
 
 .PHONY: deploy
 
@@ -19,16 +25,25 @@ deploy:
 	API_IMAGE="$(CENTAUR_API_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	SANDBOX_IMAGE="$(CENTAUR_SANDBOX_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	SLACKBOTV2_IMAGE="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY):fork-$${SHA}"; \
+	CONSOLE_IMAGE="$(CENTAUR_CONSOLE_IMAGE_REPOSITORY):fork-$${SHA}"; \
+	IRON_PROXY_IMAGE="$(CENTAUR_IRON_PROXY_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	echo "Building $${API_IMAGE}"; \
 	docker build -t "$${API_IMAGE}" -f services/api-rs/Dockerfile .; \
 	echo "Building $${SANDBOX_IMAGE}"; \
 	docker build --target sandbox -t "$${SANDBOX_IMAGE}" -f services/sandbox/Dockerfile .; \
 	echo "Building $${SLACKBOTV2_IMAGE}"; \
 	docker build -t "$${SLACKBOTV2_IMAGE}" -f services/slackbotv2/Dockerfile .; \
+	echo "Building $${CONSOLE_IMAGE}"; \
+	docker build -t "$${CONSOLE_IMAGE}" -f services/console/Dockerfile services/console; \
+	echo "Building $${IRON_PROXY_IMAGE}"; \
+	docker build -t "$${IRON_PROXY_IMAGE}" -f services/iron-proxy/Dockerfile .; \
 	echo "Importing images into k3s"; \
 	docker save "$${API_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
 	docker save "$${SANDBOX_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
 	docker save "$${SLACKBOTV2_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
+	docker save "$${CONSOLE_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
+	docker save "$${IRON_PROXY_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
+	helm repo add centaur-onepassword https://1password.github.io/connect-helm-charts --force-update >/dev/null; \
 	for attempt in 1 2 3; do \
 	  if helm dependency build "$(CENTAUR_CHART)" --skip-refresh >/dev/null; then break; fi; \
 	  if [[ "$${attempt}" -eq 3 ]]; then exit 1; fi; \
@@ -49,8 +64,18 @@ deploy:
 	  --set toolServer.ref="$${FULL_SHA}" \
 	  --set slackbotv2.image.repository="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY)" \
 	  --set slackbotv2.image.tag="fork-$${SHA}" \
-	  --set slackbotv2.image.pullPolicy=IfNotPresent; \
+	  --set slackbotv2.image.pullPolicy=IfNotPresent \
+	  --set console.image.repository="$(CENTAUR_CONSOLE_IMAGE_REPOSITORY)" \
+	  --set console.image.tag="fork-$${SHA}" \
+	  --set console.image.pullPolicy=IfNotPresent \
+	  --set ironProxy.image.repository="$(CENTAUR_IRON_PROXY_IMAGE_REPOSITORY)" \
+	  --set ironProxy.image.tag="fork-$${SHA}" \
+	  --set ironProxy.image.pullPolicy=IfNotPresent; \
+	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_CONSOLE_DEPLOYMENT)" --timeout=180s; \
+	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_CONSOLE_WORKER_DEPLOYMENT)" --timeout=180s; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_API_DEPLOYMENT)" --timeout=180s; \
+	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_SLACKBOTV2_DEPLOYMENT)" --timeout=180s; \
+	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "daemonset/$(CENTAUR_REPO_CACHE_DAEMONSET)" --timeout=180s; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" get deploy "$(CENTAUR_API_DEPLOYMENT)" \
 	  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" get deploy "$(CENTAUR_API_DEPLOYMENT)" \
