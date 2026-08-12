@@ -35,7 +35,6 @@ deploy:
 	  --set apiRs.image.repository="$(CENTAUR_API_IMAGE_REPOSITORY)" \
 	  --set apiRs.image.tag="fork-$${SHA}" \
 	  --set apiRs.image.pullPolicy=IfNotPresent \
-	  --set apiRs.ironProxy.mode=disabled \
 	  --set apiRs.syncInfraSecrets=false \
 	  --set sandbox.image.repository="$(CENTAUR_SANDBOX_IMAGE_REPOSITORY)" \
 	  --set sandbox.image.tag="fork-$${SHA}" \

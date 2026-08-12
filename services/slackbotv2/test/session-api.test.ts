@@ -7,6 +7,7 @@ import {
   harnessRestartPreamble,
   interruptSessionExecution,
   openSessionEventStream,
+  resolveSlackHomeTeamId,
   serializeAttachment,
   serializeMessage
 } from '../src/session-api'
@@ -145,6 +146,50 @@ function textPartIncludes(part: JsonObject, text: string): boolean {
 function isJsonRecord(value: JsonValue | undefined): value is JsonObject {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
+
+describe('Slack home team resolution', () => {
+  test('resolves the home team ID from auth.test', async () => {
+    const realFetch = globalThis.fetch
+    let request: Request | undefined
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      request = new Request(input, init)
+      return Response.json({ ok: true, team_id: 'T_HOME' })
+    }) as typeof fetch
+    try {
+      const teamId = await resolveSlackHomeTeamId({
+        apiUrl: 'http://api.test',
+        botToken: 'xoxb-test',
+        signingSecret: 'secret',
+        slackApiUrl: 'https://slack.test/api/'
+      })
+
+      expect(teamId).toBe('T_HOME')
+      expect(request?.url).toBe('https://slack.test/api/auth.test')
+      expect(request?.method).toBe('GET')
+      expect(request?.headers.get('authorization')).toBe('Bearer xoxb-test')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  test('rejects startup when auth.test cannot resolve a home team ID', async () => {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ error: 'invalid_auth', ok: false }, { status: 401 })) as typeof fetch
+    try {
+      await expect(
+        resolveSlackHomeTeamId({
+          apiUrl: 'http://api.test',
+          botToken: 'xoxb-test',
+          signingSecret: 'secret',
+          slackApiUrl: 'https://slack.test/api/'
+        })
+      ).rejects.toThrow('Slack auth.test failed to resolve the bot home team ID')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})
 
 describe('session event streaming', () => {
   test('passes activity summary events through to the renderer source stream', async () => {
@@ -712,6 +757,47 @@ describe('forwardToSessionApi harness restart', () => {
     expect('on_harness_conflict' in (create?.body as object)).toBe(false)
   })
 
+  test('reports the harness resolved by api-rs', async () => {
+    const { fetchFn, requests } = fakeApi({
+      createSession: [
+        {
+          body: {
+            harness_switched: false,
+            harness_type: 'nanocodex',
+            harness_assignment: {
+              experiment: 'codex_nanocodex_ab',
+              requested_harness: 'codex',
+              cohort: 'nanocodex',
+              rollout_percent: 50
+            }
+          },
+          status: 200
+        }
+      ]
+    })
+    let resolvedHarness: string | undefined
+    let resolvedExperiment: string | undefined
+
+    await forwardToSessionApi(options(fetchFn), forwardInput(apiMessage('hi')), {
+      onSessionCreated: async outcome => {
+        resolvedHarness = outcome.harnessType
+        resolvedExperiment = outcome.harnessAssignment?.experiment
+      }
+    })
+
+    expect(resolvedHarness).toBe('nanocodex')
+    expect(resolvedExperiment).toBe('codex_nanocodex_ab')
+    expect(executeBody(requests).metadata).toMatchObject({
+      harness_type: 'nanocodex',
+      harness_assignment: {
+        experiment: 'codex_nanocodex_ab',
+        requested_harness: 'codex',
+        cohort: 'nanocodex',
+        rollout_percent: 50
+      }
+    })
+  })
+
   test('harness_switched response fires onSessionRestarted and prepends the preamble', async () => {
     const { fetchFn, requests } = fakeApi({
       createSession: [{ body: { ok: true, harness_switched: true }, status: 200 }]
@@ -811,17 +897,21 @@ describe('session principal display name', () => {
     }
   }
 
-  function createBody(requests: RecordedRequest[]): {
-    metadata?: {
-      slack_conversation_name?: string
-      slack_team_id?: string
+	  function createBody(requests: RecordedRequest[]): {
+	    metadata?: {
+	      slack_channel_id?: string
+	      slack_conversation_name?: string
+	      slack_team_id?: string
+	      slack_user_email?: string
       slack_user_id?: string
     }
-  } {
-    return (requests.find(request => request.url.endsWith('.000100'))?.body ?? {}) as {
-      metadata?: {
-        slack_conversation_name?: string
-        slack_team_id?: string
+	  } {
+	    return (requests.find(request => request.url.endsWith('.000100'))?.body ?? {}) as {
+	      metadata?: {
+	        slack_channel_id?: string
+	        slack_conversation_name?: string
+	        slack_team_id?: string
+	        slack_user_email?: string
         slack_user_id?: string
       }
     }
@@ -931,9 +1021,10 @@ describe('session principal display name', () => {
       async () => {
         await forwardToSessionApi(slackOptions(fetchFn), forwardInput(apiMessage('hi')))
       }
-    )
-    expect(createBody(requests).metadata?.slack_conversation_name).toBe('eng-oncall')
-  })
+	    )
+	    expect(createBody(requests).metadata?.slack_conversation_name).toBe('eng-oncall')
+	    expect(createBody(requests).metadata?.slack_channel_id).toBe('C1')
+	  })
 
   test('continues creating the session when the channel lookup never settles', async () => {
     const { fetchFn, requests } = fakeApi()
@@ -958,22 +1049,74 @@ describe('session principal display name', () => {
     expect(requests.some(request => request.url.endsWith('/execute'))).toBe(true)
   })
 
-  test('DM sessions name the principal after the DM partner', async () => {
+  test('DM sessions include the email of a home-team partner', async () => {
     const { fetchFn, requests } = fakeApi()
     const dm = apiMessage('hi')
     dm.threadId = 'slack:D9:1700000000.000100'
     dm.raw = { channel: 'D9' }
     await withSlackStub(
-      url =>
-        url.includes('users.info')
-          ? Response.json({ ok: true, user: { profile: { display_name: 'Ada Lovelace' } } })
-          : Response.json({ ok: true }),
+      url => {
+        if (url.includes('users.info')) {
+          return Response.json({
+            ok: true,
+            user: {
+              is_stranger: false,
+              profile: { display_name: 'Ada Lovelace', email: 'ada@example.com' },
+              team_id: 'T1'
+            }
+          })
+        }
+        return Response.json({
+          ok: true,
+          profile: { display_name: 'Ada Lovelace' }
+        })
+      },
       async () => {
-        await forwardToSessionApi(slackOptions(fetchFn), forwardInput(dm))
+        await forwardToSessionApi(
+          { ...slackOptions(fetchFn), slackHomeTeamId: 'T1' },
+          forwardInput(dm)
+        )
       }
     )
     expect(createBody(requests).metadata?.slack_conversation_name).toBe('Ada Lovelace')
+    expect(createBody(requests).metadata?.slack_channel_id).toBe('D9')
     expect(createBody(requests).metadata?.slack_team_id).toBe('T1')
+    expect(createBody(requests).metadata?.slack_user_email).toBe('ada@example.com')
+    expect(createBody(requests).metadata?.slack_user_id).toBe('U1')
+  })
+
+  test('DM sessions omit the email of an external-team partner', async () => {
+    const { fetchFn, requests } = fakeApi()
+    const dm = apiMessage('hi')
+    dm.threadId = 'slack:D9:1700000000.000100'
+    dm.raw = { channel: 'D9' }
+    await withSlackStub(
+      url => {
+        if (url.includes('users.info')) {
+          return Response.json({
+            ok: true,
+            user: {
+              is_stranger: true,
+              profile: { display_name: 'Grace Hopper', email: 'grace@example.com' },
+              team_id: 'T2'
+            }
+          })
+        }
+        return Response.json({
+          ok: true,
+          profile: { display_name: 'Grace Hopper' }
+        })
+      },
+      async () => {
+        await forwardToSessionApi(
+          { ...slackOptions(fetchFn), slackHomeTeamId: 'T1' },
+          forwardInput(dm)
+        )
+      }
+    )
+
+    expect(createBody(requests).metadata?.slack_conversation_name).toBe('Grace Hopper')
+    expect(createBody(requests).metadata?.slack_user_email).toBeUndefined()
     expect(createBody(requests).metadata?.slack_user_id).toBe('U1')
   })
 

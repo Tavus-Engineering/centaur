@@ -14,7 +14,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose};
 use centaur_session_runtime::{SessionRuntime, ToolHostCallInput};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -22,6 +22,7 @@ use time::OffsetDateTime;
 
 use crate::{
     ApiError,
+    api_jwt::jwt_signing_secret,
     routes::{AppState, header_value},
     tool_discovery::{DiscoveredTool, ToolDiscoveryConfig, discover_tool_catalog},
 };
@@ -749,11 +750,6 @@ fn static_env(cell: &'static OnceLock<Option<String>>, name: &str) -> Option<Str
         return env::var(name).ok();
     }
     cell.get_or_init(|| env::var(name).ok()).clone()
-}
-
-fn jwt_signing_secret() -> Option<String> {
-    static CELL: OnceLock<Option<String>> = OnceLock::new();
-    static_env(&CELL, "CENTAUR_JWT_SIGNING_SECRET")
 }
 
 fn mcp_public_url_env() -> Option<String> {

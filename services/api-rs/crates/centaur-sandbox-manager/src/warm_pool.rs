@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use centaur_sandbox_core::{SandboxError, SandboxId, SandboxSpec, SandboxStatus};
 use centaur_session_sqlx::{PgSessionStore, SessionStoreError};
@@ -14,7 +14,7 @@ const STALE_EVICTING_WARM_SANDBOX_AGE: Duration = Duration::from_secs(300);
 pub struct WarmPoolConfig {
     pub target_size: usize,
     pub replenish_interval: Duration,
-    pub bootstrap_iron_control_principal: Option<String>,
+    pub bootstrap_iron_control_principal: String,
     pub max_running_sandboxes: Option<usize>,
 }
 
@@ -65,6 +65,7 @@ impl WarmPoolManager {
         &self,
         thread_key: &str,
         iron_control_principal: Option<&str>,
+        proxy_labels: &BTreeMap<String, String>,
     ) -> Result<Option<String>, WarmPoolError> {
         loop {
             let Some(sandbox_id) = self
@@ -85,7 +86,7 @@ impl WarmPoolManager {
                     if let Some(principal_id) = iron_control_principal
                         && let Err(error) = self
                             .manager
-                            .assign_iron_control_proxy_principal(&id, principal_id)
+                            .assign_iron_control_proxy_principal(&id, principal_id, proxy_labels)
                             .await
                     {
                         let error_message = error.to_string();
@@ -130,9 +131,8 @@ impl WarmPoolManager {
 
         for _ in 0..needed {
             let mut spec = (self.spec_factory)();
-            if let Some(principal_id) = &self.config.bootstrap_iron_control_principal {
-                spec.iron_control_principal = Some(principal_id.clone());
-            }
+            spec.iron_control_principal =
+                Some(self.config.bootstrap_iron_control_principal.clone());
             let handle = self.manager.create_running(spec).await?;
             if let Err(error) = self
                 .store
@@ -296,7 +296,7 @@ mod tests {
             WarmPoolConfig {
                 target_size: 1,
                 replenish_interval: Duration::from_secs(60),
-                bootstrap_iron_control_principal: None,
+                bootstrap_iron_control_principal: "prn_test_bootstrap".to_owned(),
                 max_running_sandboxes: None,
             },
         );
@@ -362,7 +362,7 @@ mod tests {
             WarmPoolConfig {
                 target_size: 0,
                 replenish_interval: Duration::from_secs(60),
-                bootstrap_iron_control_principal: None,
+                bootstrap_iron_control_principal: "prn_test_bootstrap".to_owned(),
                 max_running_sandboxes: None,
             },
         );

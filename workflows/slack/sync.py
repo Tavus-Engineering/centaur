@@ -1,4 +1,4 @@
-"""Workflow: sync recent public Slack channel history into Postgres."""
+"""Workflow: sync recent Slack channel history into Postgres."""
 
 from __future__ import annotations
 
@@ -57,6 +57,8 @@ DEFAULT_CHANNEL_PAGE_LIMIT = 100
 DEFAULT_THREAD_REPLY_PAGE_LIMIT = 200
 DEFAULT_SYNC_INTERVAL_SECONDS = 3_600
 EXCLUDED_CHANNELS_ENV = "SLACK_ETL_EXCLUDED_CHANNEL_PATTERNS"
+INDEX_PRIVATE_CHANNELS_ENV = "SLACK_SYNC_INDEX_PRIVATE_CHANNELS"
+NOT_IN_CHANNEL_SKIP_REASON = "bot_not_in_channel"
 
 
 def _env_flag_enabled(name: str, default: bool = False) -> bool:
@@ -108,6 +110,25 @@ def _filter_excluded_channels(
         else:
             included.append(channel)
     return included, excluded
+
+
+def _channel_is_non_member(channel: dict[str, Any]) -> bool:
+    """Return whether Slack discovery says the ETL actor cannot read history."""
+    return channel.get("is_member") is False
+
+
+def _filter_non_member_channels(
+    channels: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Split channels into history-readable channels and membership skips."""
+    included = []
+    skipped = []
+    for channel in channels:
+        if _channel_is_non_member(channel):
+            skipped.append(channel_ref(channel, NOT_IN_CHANNEL_SKIP_REASON))
+        else:
+            included.append(channel)
+    return included, skipped
 
 
 SCHEDULE = {
@@ -210,7 +231,7 @@ def _max_slack_ts(*values: Any) -> str | None:
 
 
 async def _upsert_channels(pool, channels: list[dict[str, Any]]) -> None:
-    """Refresh public Slack sync channel rows and mark absent channels out of scope."""
+    """Refresh Slack sync channel rows and mark absent channels out of scope."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -222,12 +243,13 @@ async def _upsert_channels(pool, channels: list[dict[str, Any]]) -> None:
                     continue
                 await conn.execute(
                     "INSERT INTO slack_sync_channels ("
-                    "channel_id, channel_name, is_archived, is_syncable, topic, purpose, "
-                    "member_count, raw_payload, last_seen_at, updated_at"
-                    ") VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7::jsonb, NOW(), NOW()) "
+                    "channel_id, channel_name, is_archived, is_private, is_syncable, "
+                    "topic, purpose, member_count, raw_payload, last_seen_at, updated_at"
+                    ") VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8::jsonb, NOW(), NOW()) "
                     "ON CONFLICT (channel_id) DO UPDATE SET "
                     "channel_name = EXCLUDED.channel_name, "
                     "is_archived = EXCLUDED.is_archived, "
+                    "is_private = EXCLUDED.is_private, "
                     "is_syncable = TRUE, "
                     "topic = EXCLUDED.topic, "
                     "purpose = EXCLUDED.purpose, "
@@ -238,6 +260,7 @@ async def _upsert_channels(pool, channels: list[dict[str, Any]]) -> None:
                     channel_id,
                     str(channel.get("name") or ""),
                     bool(channel.get("is_archived")),
+                    bool(channel.get("is_private")),
                     str(channel.get("topic") or ""),
                     str(channel.get("purpose") or ""),
                     int(channel.get("member_count") or 0),
@@ -349,7 +372,7 @@ async def _update_checkpoint_failure(
 
 
 async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
-    """Sync public Slack channels visible through the configured ETL user token."""
+    """Sync Slack channels visible through the configured ETL user token."""
     started_at = time.monotonic()
     mode = "incremental"
     record_slack_retention_run(WORKFLOW_NAME, "started", mode)
@@ -378,8 +401,13 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
     limit = positive_int(inp.limit, DEFAULT_CHANNEL_PAGE_LIMIT)
     client = _client()
     access_mode = client._etl_access_mode()
+    include_private_channels = _env_flag_enabled(INDEX_PRIVATE_CHANNELS_ENV)
     try:
-        public_channels = client._list_etl_channels(limit=10_000, force_refresh=True)
+        channels = client._list_etl_channels(
+            limit=10_000,
+            force_refresh=True,
+            include_private_channels=include_private_channels,
+        )
         record_slack_retention_api_request("list_channels", "success")
     except Exception as exc:
         reason = failure_reason(str(exc))
@@ -391,10 +419,10 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
             WORKFLOW_NAME, dt.datetime.now(dt.timezone.utc).timestamp()
         )
         raise
-    record_etl_items_seen("slack", "channel", "channel", len(public_channels))
+    record_etl_items_seen("slack", "channel", "channel", len(channels))
     exclusion_patterns = _channel_exclusion_patterns(os.getenv(EXCLUDED_CHANNELS_ENV))
     channels_to_sync, excluded_channels = _filter_excluded_channels(
-        public_channels,
+        channels,
         exclusion_patterns,
     )
     if excluded_channels:
@@ -404,14 +432,25 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
             patterns=exclusion_patterns,
             channels=excluded_channels,
         )
+    channels_to_sync, non_member_channels = _filter_non_member_channels(
+        channels_to_sync,
+    )
+    if non_member_channels:
+        ctx.log(
+            "slack_sync_channels_skipped_not_in_channel",
+            count=len(non_member_channels),
+            channels=non_member_channels,
+        )
+    skipped_channels = list(excluded_channels) + list(non_member_channels)
     await _upsert_channels(ctx._pool, channels_to_sync)
     record_etl_items_upserted("slack", "channel", "channel", len(channels_to_sync))
 
-    if not public_channels:
-        reason = "no_public_channels"
+    if not channels:
+        reason = "no_channels"
         ctx.log(
-            "slack_sync_skipped_no_public_channels",
+            "slack_sync_skipped_no_channels",
             access_mode=access_mode,
+            include_private_channels=include_private_channels,
             reason=reason,
         )
         await emit_slack_checkpoint_metrics(ctx._pool)
@@ -426,12 +465,17 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         }
 
     if not channels_to_sync:
-        reason = "all_channels_excluded"
+        if non_member_channels:
+            reason = "all_channels_skipped"
+            log_name = "slack_sync_skipped_all_channels_skipped"
+        else:
+            reason = "all_channels_excluded"
+            log_name = "slack_sync_skipped_all_channels_excluded"
         ctx.log(
-            "slack_sync_skipped_all_channels_excluded",
+            log_name,
             access_mode=access_mode,
             reason=reason,
-            channels_skipped=excluded_channels,
+            channels_skipped=skipped_channels,
         )
         await emit_slack_checkpoint_metrics(ctx._pool)
         record_slack_retention_run(WORKFLOW_NAME, "skipped", mode, reason)
@@ -441,7 +485,7 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         return {
             "status": "skipped",
             "reason": reason,
-            "channels_skipped": excluded_channels,
+            "channels_skipped": skipped_channels,
         }
 
     try:
@@ -468,17 +512,18 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         workflow_run_id=ctx.run_id,
         mode="incremental",
         requested=[channel_ref(channel) for channel in channels_to_sync],
-        skipped=excluded_channels,
+        skipped=skipped_channels,
         metadata={
             **inp.metadata,
             "slack_access_mode": access_mode,
+            "index_private_channels": include_private_channels,
             "users_upserted": users_upserted,
             "excluded_channel_patterns": exclusion_patterns,
         },
     )
 
     synced: list[dict[str, str]] = []
-    skipped: list[dict[str, str]] = list(excluded_channels)
+    skipped: list[dict[str, str]] = list(skipped_channels)
     failed: list[dict[str, str]] = []
     counts = {
         "messages_fetched": 0,
