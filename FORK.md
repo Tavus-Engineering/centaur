@@ -24,4 +24,4 @@ line in the PR that syncs it back.
 | 552fa6c7 | slackbotv2: heartbeat boot-race fix — 60s startup delay + one re-verify pass before alerting | [#31](https://github.com/Tavus-Engineering/centaur/pull/31) |
 | 5f1fb5b3 | slackbotv2: never act on DMs the bot is not a party to (user-scoped event subs delivered private human-to-human DMs as instructions) | [#32](https://github.com/Tavus-Engineering/centaur/pull/32) |
 | cc6dc669 | slack: keep Watch Agent investigations inline, acknowledge with :mag:, and require ISO 24495-1 plain-language output | [#33](https://github.com/Tavus-Engineering/centaur/pull/33) |
-| ec8d4825 | upgrade Watch Agent to Centaur 2.0 with cross-thread recall, complete service deployment, and proxy secret sync | [#35](https://github.com/Tavus-Engineering/centaur/pull/35) |
+| 920a1460 | upgrade Watch Agent to Centaur 2.0 with cross-thread recall, complete service deployment, proxy secret sync, and durable Slack/company-context grants | [#35](https://github.com/Tavus-Engineering/centaur/pull/35) |
