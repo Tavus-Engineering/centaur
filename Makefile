@@ -36,6 +36,8 @@ deploy:
 	  --set apiRs.image.tag="fork-$${SHA}" \
 	  --set apiRs.image.pullPolicy=IfNotPresent \
 	  --set apiRs.syncInfraSecrets=false \
+	  --set apiRs.etl.slack.enabled=true \
+	  --set apiRs.etl.slack.indexPrivateChannels=false \
 	  --set sandbox.image.repository="$(CENTAUR_SANDBOX_IMAGE_REPOSITORY)" \
 	  --set sandbox.image.tag="fork-$${SHA}" \
 	  --set sandbox.image.pullPolicy=IfNotPresent \
