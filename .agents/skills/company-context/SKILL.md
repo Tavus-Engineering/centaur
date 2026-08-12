@@ -1,6 +1,6 @@
 ---
 name: company-context
-description: "Use Centaur's indexed company context and scoped read-only SQL together with direct Slack, Linear, Google Docs, Drive, Calendar, or Granola searches when answering internal company-history, prior-decision, project-context, meeting-context, roadmap/status, or cross-source memory questions. Indexed context includes Slack channels, user-visible Slack DMs, Google Docs, Google Calendar, Linear, and user-visible Granola notes. Use for questions like what was discussed, decided, planned, mentioned, or documented internally, especially when the user did not name one exact source."
+description: "Use Centaur's indexed company context and scoped read-only SQL together with direct Slack, Linear, Google Docs, Drive, Calendar, or Granola searches when answering internal company-history, prior-decision, project-context, meeting-context, roadmap/status, cross-source memory, or operational incident questions. Indexed context includes Slack channels, user-visible Slack DMs, Google Docs, Google Calendar, Linear, and user-visible Granola notes. Use proactively for alerts and incident investigations to find similar prior threads or issues, even when the user did not explicitly ask for history."
 ---
 
 # Company Context
@@ -75,6 +75,21 @@ company_context search-dms "QUERY" --limit 10 --json
 - Prefer indexed context for historical recall, older discussions, and cross-source semantic matches.
 - Treat disagreement as a signal to explain the mismatch, including dates and source links when available.
 - Avoid claiming completeness unless the direct source tool or owning API supports that claim.
+
+## Incident and Alert Recall
+
+For an operational alert or incident investigation, search for prior related
+incidents before settling on the current explanation. Derive a small set of
+stable signatures from the report, such as the alert or metric name, provider,
+service, exception text, status code, and affected component. Search indexed
+company context and direct Slack for those signatures, then check Linear when
+an issue or remediation may already exist.
+
+Lead with a prior incident only when the evidence supports a real connection.
+State whether it is the same failure mode, a related symptom, or merely a useful
+comparison, and include the prior thread or issue link. If nothing relevant is
+found, say so briefly and continue the current investigation without forcing a
+match.
 
 ## When To Fall Back
 
