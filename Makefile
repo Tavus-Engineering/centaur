@@ -15,6 +15,7 @@ CENTAUR_SLACKBOTV2_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-slackbotv2
 CENTAUR_CONSOLE_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console
 CENTAUR_CONSOLE_WORKER_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console-worker
 CENTAUR_REPO_CACHE_DAEMONSET ?= $(CENTAUR_RELEASE)-centaur-repo-cache
+CENTAUR_REQUIRED_INFRA_TOOLS ?= slack company_context
 
 .PHONY: deploy
 
@@ -74,6 +75,10 @@ deploy:
 	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_CONSOLE_DEPLOYMENT)" --timeout=180s; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_CONSOLE_WORKER_DEPLOYMENT)" --timeout=180s; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_API_DEPLOYMENT)" --timeout=180s; \
+	for tool in $(CENTAUR_REQUIRED_INFRA_TOOLS); do \
+	  kubectl -n "$(CENTAUR_NAMESPACE)" exec "deploy/$(CENTAUR_API_DEPLOYMENT)" -- \
+	    centaur-perms --tools-dir /app/tools roles grant infra --tool "$${tool}"; \
+	done; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_SLACKBOTV2_DEPLOYMENT)" --timeout=180s; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "daemonset/$(CENTAUR_REPO_CACHE_DAEMONSET)" --timeout=180s; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" get deploy "$(CENTAUR_API_DEPLOYMENT)" \
