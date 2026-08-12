@@ -29,7 +29,10 @@ deploy:
 	docker save "$${API_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
 	docker save "$${SANDBOX_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
 	docker save "$${SLACKBOTV2_IMAGE}" | $(CENTAUR_K3S_CTR) images import -; \
-	helm dependency update "$(CENTAUR_CHART)" >/dev/null; \
+	for attempt in 1 2 3; do \
+	  if helm dependency build "$(CENTAUR_CHART)" --skip-refresh >/dev/null; then break; fi; \
+	  if [[ "$${attempt}" -eq 3 ]]; then exit 1; fi; \
+	done; \
 	kubectl apply -f "$(CENTAUR_CHART)/charts/agent-sandbox/crds" >/dev/null; \
 	helm upgrade "$(CENTAUR_RELEASE)" "$(CENTAUR_CHART)" -n "$(CENTAUR_NAMESPACE)" --reset-then-reuse-values \
 	  --set apiRs.image.repository="$(CENTAUR_API_IMAGE_REPOSITORY)" \
