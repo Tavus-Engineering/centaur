@@ -29,16 +29,17 @@ ironProxy:
     # one port so callers can reach it.
     pgPort: 5432
   # CIDRs iron-proxy must never dial upstream, even when the host allowlist
-  # matches. Keep the local/IMDS defaults and include the default k3s pod/service
-  # CIDRs so sandboxes cannot proxy back into in-cluster services like
-  # onepassword-connect.
+  # matches. Keep the local/IMDS defaults and the default k3s pod CIDR so
+  # sandboxes cannot proxy directly to in-cluster pods. Do not include the k3s
+  # Service CIDR (10.43.0.0/16): the signed api-rs and console callbacks use
+  # ClusterIP services through this proxy. Their exact destinations remain
+  # constrained by the per-sandbox NetworkPolicies.
   upstreamDenyCidrs:
     - "169.254.169.254/32"
     - "fd00:ec2::254/128"
     - "127.0.0.0/8"
     - "::1/128"
     - "10.42.0.0/16"
-    - "10.43.0.0/16"
   secretSource: onepassword
   secretTtl: 10m
   # Requests/limits for each per-sandbox iron-proxy pod (k8s resources map).

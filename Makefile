@@ -15,7 +15,7 @@ CENTAUR_SLACKBOTV2_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-slackbotv2
 CENTAUR_CONSOLE_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console
 CENTAUR_CONSOLE_WORKER_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console-worker
 CENTAUR_REPO_CACHE_DAEMONSET ?= $(CENTAUR_RELEASE)-centaur-repo-cache
-CENTAUR_REQUIRED_INFRA_TOOLS ?= slack company_context
+CENTAUR_REQUIRED_INFRA_TOOLS ?= slack company_context signoz tavus-api
 
 .PHONY: deploy
 

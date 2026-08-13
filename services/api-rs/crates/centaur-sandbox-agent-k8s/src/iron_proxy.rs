@@ -1537,6 +1537,7 @@ fn build_iron_proxy_network_policies(
                     control_target,
                     otlp_egress,
                     observability_enabled,
+                    resolved.api_server_enabled,
                 )),
             }),
         },
@@ -1554,6 +1555,7 @@ fn proxy_egress_rules(
     control_target: &ControlPlaneEgressTarget,
     otlp_egress: Option<&OtlpEgressTarget>,
     observability_enabled: bool,
+    api_server_enabled: bool,
 ) -> Vec<NetworkPolicyEgressRule> {
     // Upstream egress: 443/5432 for normal traffic, plus the iron-control port
     // (deduped) so a sync-mode proxy can reach the control plane. Public
@@ -1570,11 +1572,13 @@ fn proxy_egress_rules(
         vec![network_port(PG_LISTENER_PORT)],
     ));
     rules.push(egress_to(vec![public_ipv4_peer()], upstream_ports));
-    if observability_enabled {
+    if api_server_enabled {
         rules.push(egress_to(
             vec![pod_peer(iron_proxy.api_pod_labels.clone())],
             vec![network_port(8000), network_port(8080)],
         ));
+    }
+    if observability_enabled {
         if let Some(target) = otlp_egress {
             rules.push(egress_to(
                 vec![namespace_peer(&target.namespace)],
@@ -2659,9 +2663,10 @@ mod tests {
             port: 8000,
         };
 
+        let resolved = resolved_with_capabilities(true, false);
         let policies = build_iron_proxy_network_policies(
             &id,
-            &resolved(),
+            &resolved,
             &iron_proxy,
             &control_target,
             Some(&target),
@@ -2690,7 +2695,7 @@ mod tests {
 
         let policies = build_iron_proxy_network_policies(
             &id,
-            &resolved(),
+            &resolved,
             &iron_proxy,
             &control_target,
             None,
@@ -2721,9 +2726,10 @@ mod tests {
             port: 8000,
         };
 
+        let resolved = resolved_with_capabilities(false, false);
         let policies = build_iron_proxy_network_policies(
             &id,
-            &resolved(),
+            &resolved,
             &iron_proxy,
             &control_target,
             Some(&target),
@@ -2789,6 +2795,34 @@ mod tests {
                 .iter()
                 .any(|rule| rule_allows_public_port(rule, 3000))
         );
+    }
+
+    #[test]
+    fn api_capability_allows_api_egress_without_observability() {
+        let id = SandboxId::new("asbx-test");
+        let iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
+        let control_target = control_target();
+        let resolved = resolved_with_capabilities(false, true);
+
+        let policies = build_iron_proxy_network_policies(
+            &id,
+            &resolved,
+            &iron_proxy,
+            &control_target,
+            None,
+            false,
+        );
+        let proxy_egress = policies[1].spec.as_ref().unwrap().egress.as_ref().unwrap();
+
+        assert!(proxy_egress.iter().any(|rule| {
+            rule.to.as_ref().is_some_and(|peers| {
+                peers.iter().any(|peer| {
+                    peer.pod_selector.as_ref().is_some_and(|selector| {
+                        selector.match_labels.as_ref() == Some(&iron_proxy.api_pod_labels)
+                    })
+                })
+            })
+        }));
     }
 
     #[test]
