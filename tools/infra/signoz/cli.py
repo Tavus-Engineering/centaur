@@ -24,6 +24,21 @@ def _print(data: object, json_output: bool) -> None:
         console.print_json(json.dumps(data))
 
 
+@app.command("health")
+def health(json_output: bool = typer.Option(True, "--json/--no-json")) -> None:
+    """Assert hosted SigNoz MCP connectivity and brokered authentication."""
+    details = SignozClient().ready()
+    payload = {
+        "ok": bool(details.get("ok")),
+        "tool": "signoz",
+        "error": details.get("error"),
+        "details": details if details.get("ok") else {},
+    }
+    _print(payload, json_output)
+    if not payload["ok"]:
+        raise typer.Exit(1)
+
+
 @app.command()
 def ready(json_output: bool = typer.Option(False, "--json", "-j")) -> None:
     """Check MCP connectivity."""

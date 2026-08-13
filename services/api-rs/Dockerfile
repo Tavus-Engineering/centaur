@@ -16,22 +16,26 @@ COPY services/api-rs/ ./
 ARG RUST_BUILD_PROFILE=release
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/build/target,sharing=locked \
     case "$RUST_BUILD_PROFILE" in \
-      release) cargo build --release -p centaur-api-server && cp target/release/centaur-api-server /usr/local/bin/centaur-api-server ;; \
-      debug|dev) cargo build -p centaur-api-server && cp target/debug/centaur-api-server /usr/local/bin/centaur-api-server ;; \
+      release) cargo build --release -p centaur-api-server -p centaur-perms \
+        && cp target/release/centaur-api-server target/release/centaur-perms /usr/local/bin/ ;; \
+      debug|dev) cargo build -p centaur-api-server -p centaur-perms \
+        && cp target/debug/centaur-api-server target/debug/centaur-perms /usr/local/bin/ ;; \
       *) echo "unsupported RUST_BUILD_PROFILE=$RUST_BUILD_PROFILE" >&2; exit 2 ;; \
     esac
 
 FROM debian:bookworm-slim
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl python3 python3-pip
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-pip
 COPY --from=builder /usr/local/bin/centaur-api-server /usr/local/bin/centaur-api-server
+COPY --from=builder /usr/local/bin/centaur-perms /usr/local/bin/centaur-perms
 WORKDIR /app
+COPY centaur_sdk/ /app/centaur_sdk/
 COPY services/workflow-python/ /app/workflow-python/
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip3 install --break-system-packages --no-compile /app/workflow-python \
+    pip3 install --break-system-packages --no-compile --ignore-installed "packaging>=24.2.0" \
+    && pip3 install --break-system-packages --no-compile /app/centaur_sdk /app/workflow-python \
     && python3 -c "import boto3, botocore" \
     && rm -rf /usr/share/doc /usr/share/man /usr/share/info
 # api-rs discovers tool secret metadata from pyproject.toml at startup so it can

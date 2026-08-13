@@ -24,6 +24,25 @@ def _print(data: object, json_output: bool) -> None:
         console.print_json(json.dumps(data))
 
 
+@app.command("health")
+def health(
+    env: str = typer.Option("prod", "--env", "-e", help="prod, staging/test, or stg"),
+    json_output: bool = typer.Option(True, "--json/--no-json"),
+) -> None:
+    """Assert Tavus public API connectivity and brokered authentication."""
+    with TavusApiClient() as client:
+        details = client.ready(env=env)
+    payload = {
+        "ok": bool(details.get("ok")),
+        "tool": "tavus-api",
+        "error": details.get("error"),
+        "details": details if details.get("ok") else {},
+    }
+    _print(payload, json_output)
+    if not payload["ok"]:
+        raise typer.Exit(1)
+
+
 @app.command()
 def get(
     path: str = typer.Argument(..., help="Public API path, e.g. /v2/conversations"),

@@ -80,7 +80,7 @@ Optional Teams ingress bootstrap (consumed when teamsbot.enabled=true):
   TEAMSBOT_API_KEY             bearer the bot sends to api-rs; auto-generated
                                once when absent (never rotated in place)
 
-Optional iron-control bootstrap (consumed when ironControl.enabled=true):
+Console bootstrap:
   IRON_CONTROL_DATABASE_URL    overrides the derived DSN (default points at the
                                bundled Postgres server with no database path, so
                                Rails resolves db names from its database.yml)
@@ -202,6 +202,19 @@ secret_key_present() {
 
 if secret_exists centaur-infra-env; then
   patch_data=()
+  # Centaur 2.0 pg_dsn tools resolve their upstream through iron-proxy using
+  # CENTAUR_POSTGRES_DSN. Clusters created before that contract only have the
+  # equivalent DATABASE_URL, so add the alias once without rotating or
+  # decoding the existing credential.
+  if ! secret_key_present CENTAUR_POSTGRES_DSN; then
+    existing_db_url_b64="$(kubectl -n "$NAMESPACE" get secret centaur-infra-env \
+      -o 'jsonpath={.data.DATABASE_URL}')"
+    if [[ -z "$existing_db_url_b64" ]]; then
+      echo "FATAL: centaur-infra-env is missing DATABASE_URL; cannot seed CENTAUR_POSTGRES_DSN" >&2
+      exit 1
+    fi
+    patch_data+=("\"CENTAUR_POSTGRES_DSN\":\"$existing_db_url_b64\"")
+  fi
   if [[ -n "${OP_CONNECT_TOKEN:-}" ]]; then
     patch_data+=("\"OP_CONNECT_TOKEN\":\"$(printf '%s' "$OP_CONNECT_TOKEN" | base64 | tr -d '\n')\"")
   fi
@@ -331,6 +344,7 @@ else
     --from-literal=HEARTBEAT_WEBHOOK_SECRET="${HEARTBEAT_WEBHOOK_SECRET:-$(rand_hex)}"
     --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
     --from-literal=DATABASE_URL="$DATABASE_URL"
+    --from-literal=CENTAUR_POSTGRES_DSN="$DATABASE_URL"
     --from-literal=IRON_CONTROL_DATABASE_URL="$IRON_CONTROL_DATABASE_URL"
     --from-literal=IRON_CONTROL_INITIAL_USER_EMAIL="$IRON_CONTROL_INITIAL_USER_EMAIL"
     --from-literal=IRON_CONTROL_INITIAL_USER_PASSWORD="$(rand_hex)"

@@ -1,11 +1,19 @@
 ---
 name: company-context
-description: "Use Centaur's indexed company context together with direct Slack, Linear, Google Docs, Drive, or Calendar searches when answering internal company-history, prior-decision, project-context, meeting-context, roadmap/status, or cross-source memory questions. Indexed context includes Slack channels, user-visible Slack DMs, Google Docs, Google Calendar, and Linear. Use for questions like what was discussed, decided, planned, mentioned, or documented internally, especially when the user did not name one exact source."
+description: "Use Centaur's indexed company context and scoped read-only SQL together with direct Slack, Linear, Google Docs, Drive, Calendar, or Granola searches when answering internal company-history, prior-decision, project-context, meeting-context, roadmap/status, cross-source memory, or operational incident questions. Indexed context includes Slack channels, user-visible Slack DMs, Google Docs, Google Calendar, Linear, and user-visible Granola notes. Use proactively for alerts and incident investigations to find similar prior threads or issues, even when the user did not explicitly ask for history."
 ---
 
 # Company Context
 
-Use `company_context` as the first retrieval step for internal historical context. Its `search` command queries indexed company memory across enabled sources such as Slack channels, Google Docs (`--source docs`), Google Calendar, and Linear. It also has dedicated commands for user-visible Slack DMs and DM conversations. Always pair indexed results with the relevant direct source tools, then reconcile and collate both evidence sets before answering.
+Use `company_context` as the first retrieval step for internal historical context. Its `search` command queries indexed company memory across enabled sources such as Slack channels, Google Docs (`--source docs`), Google Calendar, Linear, and user-visible Granola notes (`--source granola`). It also has dedicated commands for user-visible Slack DMs and DM conversations. Always pair indexed results with the relevant direct source tools, then reconcile and collate both evidence sets before answering.
+
+For aggregation, grouping, joins, or fields that the search surface does not expose, use the scoped read-only SQL command. Database grants and row-level security still apply, and output is capped:
+
+```bash
+company_context query "SELECT source, count(*) FROM company_context_documents GROUP BY source" --limit 100 --json
+```
+
+Use one row-returning query. The command runs it inside a read-only transaction with a bounded timeout, so writes and multiple statements are rejected.
 
 ## Default Workflow
 
@@ -42,11 +50,13 @@ Use the source-specific tools that match the question. For broad cross-source qu
 4. For time-sensitive or "latest" asks, check index freshness:
 
 ```bash
-company_context latest-date --json
-company_context latest-date --source slack --json
-company_context latest-date --source docs --source-type google_doc --json
-company_context latest-date --source linear --json
+company_context latest-date
+company_context latest-date --source slack
+company_context latest-date --source docs --source-type google_doc
+company_context latest-date --source linear
 ```
+
+`latest-date` always outputs JSON, so it does not accept a `--json` flag.
 
 5. If results are weak, broaden or target source filters:
 
@@ -55,6 +65,7 @@ company_context search "QUERY" --source slack --limit 10 --json
 company_context search "QUERY" --source docs --source-type google_doc --limit 10 --json
 company_context search "QUERY" --source google_calendar --limit 10 --json
 company_context search "QUERY" --source linear --limit 10 --json
+company_context search "QUERY" --source granola --limit 10 --json
 company_context search-dms "QUERY" --limit 10 --json
 ```
 
@@ -64,6 +75,21 @@ company_context search-dms "QUERY" --limit 10 --json
 - Prefer indexed context for historical recall, older discussions, and cross-source semantic matches.
 - Treat disagreement as a signal to explain the mismatch, including dates and source links when available.
 - Avoid claiming completeness unless the direct source tool or owning API supports that claim.
+
+## Incident and Alert Recall
+
+For an operational alert or incident investigation, search for prior related
+incidents before settling on the current explanation. Derive a small set of
+stable signatures from the report, such as the alert or metric name, provider,
+service, exception text, status code, and affected component. Search indexed
+company context and direct Slack for those signatures, then check Linear when
+an issue or remediation may already exist.
+
+Lead with a prior incident only when the evidence supports a real connection.
+State whether it is the same failure mode, a related symptom, or merely a useful
+comparison, and include the prior thread or issue link. If nothing relevant is
+found, say so briefly and continue the current investigation without forcing a
+match.
 
 ## When To Fall Back
 
