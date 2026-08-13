@@ -28,6 +28,19 @@ deploy:
 	SLACKBOTV2_IMAGE="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	CONSOLE_IMAGE="$(CENTAUR_CONSOLE_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	IRON_PROXY_IMAGE="$(CENTAUR_IRON_PROXY_IMAGE_REPOSITORY):fork-$${SHA}"; \
+	CENTAUR_POSTGRES_DSN_B64="$$(kubectl -n "$(CENTAUR_NAMESPACE)" get secret centaur-infra-env \
+	  -o 'jsonpath={.data.CENTAUR_POSTGRES_DSN}')"; \
+	if [[ -z "$${CENTAUR_POSTGRES_DSN_B64}" ]]; then \
+	  CENTAUR_POSTGRES_DSN_B64="$$(kubectl -n "$(CENTAUR_NAMESPACE)" get secret centaur-infra-env \
+	    -o 'jsonpath={.data.DATABASE_URL}')"; \
+	  if [[ -z "$${CENTAUR_POSTGRES_DSN_B64}" ]]; then \
+	    echo "centaur-infra-env is missing DATABASE_URL; cannot seed CENTAUR_POSTGRES_DSN" >&2; \
+	    exit 1; \
+	  fi; \
+	  kubectl -n "$(CENTAUR_NAMESPACE)" patch secret centaur-infra-env --type merge \
+	    -p "{\"data\":{\"CENTAUR_POSTGRES_DSN\":\"$${CENTAUR_POSTGRES_DSN_B64}\"}}" >/dev/null; \
+	  echo "Seeded CENTAUR_POSTGRES_DSN from the existing DATABASE_URL"; \
+	fi; \
 	echo "Building $${API_IMAGE}"; \
 	docker build -t "$${API_IMAGE}" -f services/api-rs/Dockerfile .; \
 	echo "Building $${SANDBOX_IMAGE}"; \
