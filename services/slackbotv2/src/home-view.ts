@@ -28,7 +28,8 @@ export function usageGuideBlocks(): unknown[] {
     divider(),
     header('Connected Systems'),
     fields([
-      '*MCP and connector-style systems*\nTavus CLI/MCP, SigNoz, Slack, Coda, GitHub, Linear, Braintrust, LogRocket, AWS, Figma, and deployment-specific tool overlays.',
+      '*Native Codex MCP tools*\nSigNoz, Superhuman Docs (Coda), Braintrust, and LogRocket are wired directly into Codex when their deployment grants are live.',
+      '*Authenticated agent CLIs*\nSlack, Linear, GitHub (`gh`), Tavus, and deployment-specific tools are discovered through the live Centaur tool catalog.',
       '*Centaur API tools*\nUse `call tools` for the live list, then `call discover <tool>` before invoking methods. Tool calls route through Centaur auth and audit logging.',
       '*Observability*\nSigNoz queries, dashboard/alert workflows, execution timelines, tool analytics, and prompt/model analytics.',
       '*Repository access*\nMounted Tavus repos, GitHub API, local code search, PR metadata, issue context, CI checks, and deployment notes.'

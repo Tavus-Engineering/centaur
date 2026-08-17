@@ -134,7 +134,7 @@ describe('defaultReasoningForHarness', () => {
     .model_reasoning_effort
 
   test('shares the baked Codex reasoning default with Nanocodex', () => {
-    expect(bakedCodexReasoning).toBe('medium')
+    expect(bakedCodexReasoning).toBe('high')
     expect(defaultReasoningForHarness('codex')).toBe(bakedCodexReasoning)
     expect(defaultReasoningForHarness('nanocodex')).toBe(bakedCodexReasoning)
     expect(defaultReasoningForHarness('claudecode')).toBeUndefined()

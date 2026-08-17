@@ -1836,12 +1836,12 @@ const FALLBACK_OPEN_MAX_ATTEMPTS = 4
 const CODEX_PING_TIMEOUT_MS = 6 * 60 * 1000
 
 /**
- * End-to-end codex sandbox health ping: run a real session turn on a fresh
- * throwaway thread (create session -> execute -> stream events) and require a
- * non-empty final answer. Exercises the api-rs control plane, sandbox
- * spawn/claim, the baked harness config, and model credentials — the same
- * pipeline every Slack request uses. A fresh thread id per ping avoids
- * replaying an ever-growing event history.
+ * End-to-end codex sandbox and tool-health ping: run a real session turn on a
+ * fresh throwaway thread (create session -> execute -> stream events), require
+ * all named Watch Agent tools to pass health, and accept only the final
+ * sentinel. Exercises the api-rs control plane, sandbox spawn/claim, baked
+ * harness config, model credentials, live tool catalog, credential grants,
+ * and outbound proxy — the same pipeline every Slack request uses.
  */
 async function codexSandboxPing(options: SlackbotV2Options): Promise<void> {
   const threadId = `slackbotv2:health:codex-ping:${Date.now()}`
@@ -1858,7 +1858,12 @@ async function codexSandboxPing(options: SlackbotV2Options): Promise<void> {
     isMention: false,
     raw: {},
     teamId: 'health',
-    text: 'Health check ping. Reply with the single word: pong. Do not use any tools.',
+    text:
+      'Run this exact command with the shell: ' +
+      '`uv run .agents/skills/tool-health-smoke/scripts/run_tool_health_smoke.py ' +
+      '--timeout 45 --concurrency 4 --only braintrust,coda,github,linear,logrocket,signoz,slack --json`. ' +
+      'Reply with the single word `pong` only if the JSON says ok=true and checked=7. ' +
+      'Otherwise briefly report every missing or failed tool.',
     threadId,
     timestamp: new Date().toISOString()
   }
@@ -1884,7 +1889,10 @@ async function codexSandboxPing(options: SlackbotV2Options): Promise<void> {
     for await (const _chunk of chatStream) {
       void _chunk
     }
-    if (!fallback.text()) throw new Error('turn produced no final answer')
+    const answer = fallback.text().trim()
+    if (answer.toLowerCase() !== 'pong') {
+      throw new Error(`sandbox tool smoke did not pass: ${answer.slice(0, 500) || 'no final answer'}`)
+    }
   })()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {

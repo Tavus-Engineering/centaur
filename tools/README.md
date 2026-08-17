@@ -62,6 +62,11 @@ my-tool --help
 
 The open-source tool inventory lives in this `tools/` tree and changes over time. To see what ships in a running sandbox, use `centaur-tools list`; private deployments may mount additional overlay tool directories.
 
+The `integration-tools` package supplies health and fallback CLIs for the hosted
+Braintrust, Superhuman Docs (Coda), and LogRocket MCP servers plus GitHub. Codex
+uses the hosted MCP servers natively; the CLIs make those exact credential and
+discovery paths visible to `centaur-tools` and the Watch Agent heartbeat.
+
 - `centaur_investigator`: parse Centaur Slack thread references and enrich them
   with best-effort vlogs/vmetrics context without exposing message context.
 - `centaur-console`: inspect sandbox permissions and configured OAuth apps.

@@ -142,6 +142,8 @@
 |Tool commands are normal CLIs backed by mounted repo packages. Use direct tool CLIs for tools.
 |For tool smoke tests, use `<tool> health` as the canonical check. Do not invent ad hoc "test this tool" probes or raw upstream calls unless `health` fails and you are triaging the failure.
 |For broad tool smoke tests, use the `tool-health-smoke` skill or run its health runner when it is available.
+|SigNoz, Superhuman Docs (Coda), Braintrust, and LogRocket are also exposed as native Codex MCP servers when their deployment grants are configured.
+|GitHub uses `gh`; Slack and Linear use their named tool CLIs. Run `centaur-tools list` and the relevant health command before claiming one is live.
 |
 |[Parallel tool calls]
 |When multiple CLI lookups are independent, issue them in the same assistant turn as separate tool calls instead of waiting for one to finish before starting the next.

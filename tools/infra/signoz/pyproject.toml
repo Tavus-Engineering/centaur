@@ -28,4 +28,5 @@ module = "client.py"
 timeout_s = 120
 secrets = [
     {type = "http", name = "SIGNOZ_API_KEY", match_headers = ["SIGNOZ-API-KEY"], hosts = ["mcp.us.signoz.cloud", "mcp.us2.signoz.cloud", "mcp.eu.signoz.cloud", "mcp.eu2.signoz.cloud", "mcp.in.signoz.cloud", "mcp.in2.signoz.cloud"]},
+    {type = "http", name = "SIGNOZ_URL", match_headers = ["X-SigNoz-URL"], hosts = ["mcp.us.signoz.cloud", "mcp.us2.signoz.cloud", "mcp.eu.signoz.cloud", "mcp.eu2.signoz.cloud", "mcp.in.signoz.cloud", "mcp.in2.signoz.cloud"]},
 ]

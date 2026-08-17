@@ -2,8 +2,8 @@ import type { Logger } from 'chat'
 import { usageGuideBlocks } from './home-view'
 
 /**
- * Integration heartbeat: periodically checks each external integration the
- * Watch Agent depends on (cheap read-only authenticated calls), publishes a
+ * Watch Agent tool heartbeat: periodically checks each agent-facing tool
+ * surface (hosted MCP discovery or an authenticated CLI dependency), publishes a
  * status board to the Slack App Home tab, and DMs the configured users when an
  * integration breaks or recovers.
  *
@@ -14,7 +14,7 @@ import { usageGuideBlocks } from './home-view'
  *   break/recover transitions. Also the App Home publish targets.
  * - Integration credentials come from the same env the tools use
  *   (SIGNOZ_URL/SIGNOZ_API_KEY, CODA_API_KEY, LINEAR_API_KEY, SLACK_BOT_TOKEN,
- *   GITHUB_TOKEN, BRAINTRUST_API_KEY, LOGROCKET_API_TOKEN+LOGROCKET_HEALTH_URL).
+ *   GITHUB_TOKEN, BRAINTRUST_API_KEY, LOGROCKET_API_TOKEN).
  *   A missing credential shows as "not configured" (grey, never alerts).
  */
 
@@ -23,6 +23,7 @@ export type HealthStatus = 'ok' | 'fail' | 'unconfigured'
 export type HealthResult = {
   name: string
   status: HealthStatus
+  toolSurface?: string
   latencyMs?: number
   error?: string
   checkedAtMs: number
@@ -32,14 +33,24 @@ type Env = Record<string, string | undefined>
 type FetchLike = typeof globalThis.fetch
 
 const CHECK_TIMEOUT_MS = 10_000
+const MCP_PROTOCOL_VERSION = '2025-06-18'
 export const DEFAULT_INTERVAL_MS = 12 * 60 * 60 * 1000
-export const CODEX_CHECK_NAME = 'Codex sandbox'
+export const CODEX_CHECK_NAME = 'Codex sandbox + tools'
+
+type CheckEvidence = {
+  toolSurface: string
+}
+
+type McpProbe = {
+  name: string
+  arguments: Record<string, unknown>
+}
 
 type CheckSpec = {
   name: string
   /** Undefined -> unconfigured. */
   configured(env: Env): boolean
-  run(env: Env, fetchImpl: FetchLike): Promise<void>
+  run(env: Env, fetchImpl: FetchLike): Promise<CheckEvidence>
 }
 
 async function expectHttpOk(response: globalThis.Response): Promise<void> {
@@ -54,28 +65,156 @@ async function expectSlackOk(response: globalThis.Response): Promise<void> {
   if (body.ok !== true) throw new Error(body.error ?? 'slack ok=false')
 }
 
+function mcpPayload(responseText: string, contentType: string | null): Record<string, unknown> {
+  if (!responseText.trim()) return {}
+  if (!contentType?.includes('text/event-stream')) {
+    const parsed = JSON.parse(responseText) as unknown
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {}
+  }
+
+  let latest: Record<string, unknown> | undefined
+  for (const eventBlock of responseText.split(/\r?\n\r?\n/)) {
+    const data = eventBlock
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice('data:'.length).trimStart())
+      .join('\n')
+      .trim()
+    if (!data) continue
+    const parsed = JSON.parse(data) as unknown
+    if (typeof parsed === 'object' && parsed !== null) latest = parsed as Record<string, unknown>
+  }
+  if (!latest) throw new Error('MCP returned an empty event stream')
+  return latest
+}
+
+async function mcpPost(
+  url: string,
+  payload: Record<string, unknown>,
+  headers: Record<string, string>,
+  fetchImpl: FetchLike
+): Promise<{ payload: Record<string, unknown>; sessionId?: string }> {
+  const response = await fetchImpl(url, {
+    body: JSON.stringify(payload),
+    headers: {
+      Accept: 'application/json, text/event-stream',
+      'Content-Type': 'application/json',
+      'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
+      ...headers
+    },
+    method: 'POST',
+    signal: AbortSignal.timeout(CHECK_TIMEOUT_MS)
+  })
+  await expectHttpOk(response)
+  return {
+    payload: mcpPayload(await response.text(), response.headers.get('content-type')),
+    sessionId: response.headers.get('mcp-session-id') ?? undefined
+  }
+}
+
+async function mcpToolCount(
+  url: string,
+  headers: Record<string, string>,
+  fetchImpl: FetchLike,
+  probe?: McpProbe
+): Promise<number> {
+  const initialized = await mcpPost(
+    url,
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'centaur-watch-agent-heartbeat', version: '1.0.0' }
+      }
+    },
+    headers,
+    fetchImpl
+  )
+  if (initialized.payload.error) throw new Error('MCP initialize failed')
+  const sessionHeaders = initialized.sessionId
+    ? { ...headers, 'Mcp-Session-Id': initialized.sessionId }
+    : headers
+  const acknowledged = await mcpPost(
+    url,
+    { jsonrpc: '2.0', method: 'notifications/initialized' },
+    sessionHeaders,
+    fetchImpl
+  )
+  if (acknowledged.payload.error) throw new Error('MCP initialization acknowledgement failed')
+  const listed = await mcpPost(
+    url,
+    { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+    sessionHeaders,
+    fetchImpl
+  )
+  if (listed.payload.error) throw new Error('MCP tools/list failed')
+  const result = listed.payload.result
+  const tools =
+    typeof result === 'object' && result !== null
+      ? (result as { tools?: unknown }).tools
+      : undefined
+  if (!Array.isArray(tools) || tools.length === 0) throw new Error('MCP returned no tools')
+  if (probe) {
+    const probed = await mcpPost(
+      url,
+      {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: probe.name, arguments: probe.arguments }
+      },
+      sessionHeaders,
+      fetchImpl
+    )
+    const probeResult = probed.payload.result
+    if (
+      probed.payload.error ||
+      (typeof probeResult === 'object' &&
+        probeResult !== null &&
+        (probeResult as { isError?: unknown }).isError === true)
+    ) {
+      throw new Error('MCP authenticated probe failed')
+    }
+  }
+  return tools.length
+}
+
+async function mcpEvidence(
+  url: string,
+  headers: Record<string, string>,
+  fetchImpl: FetchLike,
+  probe?: McpProbe
+): Promise<CheckEvidence> {
+  const count = await mcpToolCount(url, headers, fetchImpl, probe)
+  return { toolSurface: `${count} MCP tools` }
+}
+
 const CHECKS: CheckSpec[] = [
   {
     name: 'SigNoz',
     configured: env => Boolean(env.SIGNOZ_URL && env.SIGNOZ_API_KEY),
-    run: async (env, fetchImpl) => {
-      const response = await fetchImpl(`${env.SIGNOZ_URL}/api/v1/version`, {
-        headers: { 'SIGNOZ-API-KEY': env.SIGNOZ_API_KEY ?? '' },
-        signal: AbortSignal.timeout(CHECK_TIMEOUT_MS)
-      })
-      await expectHttpOk(response)
-    }
+    run: (env, fetchImpl) =>
+      mcpEvidence(
+        env.SIGNOZ_MCP_URL ?? 'https://mcp.us.signoz.cloud/mcp',
+        {
+          'SIGNOZ-API-KEY': env.SIGNOZ_API_KEY ?? '',
+          'X-SigNoz-URL': env.SIGNOZ_URL ?? ''
+        },
+        fetchImpl
+      )
   },
   {
     name: 'Coda',
     configured: env => Boolean(env.CODA_API_KEY),
-    run: async (env, fetchImpl) => {
-      const response = await fetchImpl('https://coda.io/apis/v1/whoami', {
-        headers: { Authorization: `Bearer ${env.CODA_API_KEY}` },
-        signal: AbortSignal.timeout(CHECK_TIMEOUT_MS)
-      })
-      await expectHttpOk(response)
-    }
+    run: (env, fetchImpl) =>
+      mcpEvidence(
+        'https://docs.superhuman.com/apis/mcp',
+        { Authorization: `Bearer ${env.CODA_API_KEY}` },
+        fetchImpl
+      )
   },
   {
     name: 'Linear',
@@ -93,6 +232,7 @@ const CHECKS: CheckSpec[] = [
       await expectHttpOk(response)
       const body = (await response.json()) as { data?: { viewer?: { id?: string } } }
       if (!body.data?.viewer?.id) throw new Error('viewer query returned no id')
+      return { toolSurface: 'linear CLI' }
     }
   },
   {
@@ -105,6 +245,7 @@ const CHECKS: CheckSpec[] = [
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS)
       })
       await expectSlackOk(response)
+      return { toolSurface: 'slack CLI' }
     }
   },
   {
@@ -119,33 +260,32 @@ const CHECKS: CheckSpec[] = [
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS)
       })
       await expectHttpOk(response)
+      return { toolSurface: 'gh CLI' }
     }
   },
   {
     name: 'Braintrust',
     configured: env => Boolean(env.BRAINTRUST_API_KEY),
-    run: async (env, fetchImpl) => {
-      const response = await fetchImpl('https://api.braintrust.dev/v1/project?limit=1', {
-        headers: { Authorization: `Bearer ${env.BRAINTRUST_API_KEY}` },
-        signal: AbortSignal.timeout(CHECK_TIMEOUT_MS)
-      })
-      await expectHttpOk(response)
-    }
+    run: (env, fetchImpl) =>
+      mcpEvidence(
+        'https://api.braintrust.dev/mcp',
+        { Authorization: `Bearer ${env.BRAINTRUST_API_KEY}` },
+        fetchImpl,
+        {
+          name: 'list_recent_objects',
+          arguments: { object_type: 'project', limit: 1 }
+        }
+      )
   },
   {
     name: 'LogRocket',
-    // LogRocket has no stable public "whoami"; the operator provides the
-    // authenticated URL to probe alongside the token.
-    configured: env => Boolean(env.LOGROCKET_HEALTH_URL),
-    run: async (env, fetchImpl) => {
-      const headers: Record<string, string> = {}
-      if (env.LOGROCKET_API_TOKEN) headers.Authorization = `Token ${env.LOGROCKET_API_TOKEN}`
-      const response = await fetchImpl(env.LOGROCKET_HEALTH_URL ?? '', {
-        headers,
-        signal: AbortSignal.timeout(CHECK_TIMEOUT_MS)
-      })
-      await expectHttpOk(response)
-    }
+    configured: env => Boolean(env.LOGROCKET_API_TOKEN),
+    run: (env, fetchImpl) =>
+      mcpEvidence(
+        'https://mcp.logrocket.com/mcp',
+        { Authorization: `Bearer ${env.LOGROCKET_API_TOKEN}` },
+        fetchImpl
+      )
   }
 ]
 
@@ -162,10 +302,11 @@ export async function runHealthChecks(
       }
       const startedAtMs = Date.now()
       try {
-        await check.run(env, fetchImpl)
+        const evidence = await check.run(env, fetchImpl)
         return {
           name: check.name,
           status: 'ok',
+          toolSurface: evidence.toolSurface,
           latencyMs: Date.now() - startedAtMs,
           checkedAtMs
         }
@@ -195,7 +336,8 @@ export function formatHomeBlocks(results: HealthResult[], intervalMs: number): u
       return `${emoji} *${result.name}* — not configured`
     }
     if (result.status === 'ok') {
-      return `${emoji} *${result.name}* — healthy (${result.latencyMs}ms)`
+      const surface = result.toolSurface ? ` · ${result.toolSurface}` : ''
+      return `${emoji} *${result.name}* — healthy${surface} (${result.latencyMs}ms)`
     }
     return `${emoji} *${result.name}* — *DOWN*: ${result.error}`
   })
@@ -203,7 +345,7 @@ export function formatHomeBlocks(results: HealthResult[], intervalMs: number): u
   return [
     {
       type: 'header',
-      text: { type: 'plain_text', text: 'Integration heartbeat', emoji: true }
+      text: { type: 'plain_text', text: 'Watch Agent tool heartbeat', emoji: true }
     },
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
     {
@@ -213,7 +355,7 @@ export function formatHomeBlocks(results: HealthResult[], intervalMs: number): u
           type: 'mrkdwn',
           text:
             `Last checked <!date^${checkedAt}^{date_short_pretty} {time}|just now> · ` +
-            `re-checked every ${formatInterval(intervalMs)} · alerts DM on break/recover`
+            `re-checked every ${formatInterval(intervalMs)} · MCP/CLI access · alerts DM on break/recover`
         }
       ]
     },

@@ -15,7 +15,7 @@ CENTAUR_SLACKBOTV2_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-slackbotv2
 CENTAUR_CONSOLE_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console
 CENTAUR_CONSOLE_WORKER_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console-worker
 CENTAUR_REPO_CACHE_DAEMONSET ?= $(CENTAUR_RELEASE)-centaur-repo-cache
-CENTAUR_REQUIRED_INFRA_TOOLS ?= slack company_context signoz tavus-api
+CENTAUR_REQUIRED_INFRA_TOOLS ?= slack linear company_context signoz tavus-api integration-tools
 
 .PHONY: deploy
 
@@ -74,6 +74,11 @@ deploy:
 	  --set sandbox.image.tag="fork-$${SHA}" \
 	  --set sandbox.image.pullPolicy=IfNotPresent \
 	  --set-string sandbox.extraEnv.CENTAUR_HARNESS_CONFIG_DIR=/home/agent/harness \
+	  --set-string sandbox.extraEnv.CODA_API_KEY=CODA_API_KEY \
+	  --set-string sandbox.extraEnv.GITHUB_TOKEN=GITHUB_TOKEN \
+	  --set-string sandbox.extraEnv.LINEAR_API_KEY=LINEAR_API_KEY \
+	  --set-string sandbox.extraEnv.SIGNOZ_API_KEY=SIGNOZ_API_KEY \
+	  --set-string sandbox.extraEnv.SIGNOZ_URL=SIGNOZ_URL \
 	  --set toolServer.repo="$(CENTAUR_TOOLS_REPOSITORY)" \
 	  --set toolServer.ref="$${FULL_SHA}" \
 	  --set slackbotv2.image.repository="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY)" \

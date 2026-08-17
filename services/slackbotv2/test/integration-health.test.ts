@@ -18,16 +18,45 @@ const fullEnv = {
   SLACK_BOT_TOKEN: 'xoxb-test',
   GITHUB_TOKEN: 'ghp-test',
   BRAINTRUST_API_KEY: 'bk',
-  LOGROCKET_HEALTH_URL: 'https://logrocket.example/health',
   LOGROCKET_API_TOKEN: 'lt'
 }
 
-function okFetch(url: string): Response {
+function okFetch(url: string, init?: RequestInit): Response {
   if (url.includes('slack.com')) {
     return new Response(JSON.stringify({ ok: true, user: 'watch_agent' }), { status: 200 })
   }
   if (url.includes('linear.app')) {
     return new Response(JSON.stringify({ data: { viewer: { id: 'v1' } } }), { status: 200 })
+  }
+  const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
+  if (body?.method === 'initialize') {
+    return new Response(
+      `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} })}\n\n`,
+      {
+        status: 200,
+        headers: {
+          'content-type': 'text/event-stream',
+          ...(url.includes('docs.superhuman.com') ? { 'mcp-session-id': 'session-1' } : {})
+        }
+      }
+    )
+  }
+  if (body?.method === 'notifications/initialized') return new Response(null, { status: 202 })
+  if (body?.method === 'tools/list') {
+    return new Response(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id,
+        result: { tools: [{ name: 'search' }, { name: 'get' }, { name: 'list' }] }
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    )
+  }
+  if (body?.method === 'tools/call') {
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [] } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    })
   }
   return new Response('{}', { status: 200 })
 }
@@ -35,9 +64,12 @@ function okFetch(url: string): Response {
 describe('runHealthChecks', () => {
   test('reports ok for every configured integration when calls succeed', async () => {
     const urls: string[] = []
-    const results = await runHealthChecks(fullEnv, (async (url: string | URL | Request) => {
+    const results = await runHealthChecks(fullEnv, (async (
+      url: string | URL | Request,
+      init?: RequestInit
+    ) => {
       urls.push(String(url))
-      return okFetch(String(url))
+      return okFetch(String(url), init)
     }) as unknown as typeof fetch)
     expect(results.map(r => `${r.name}=${r.status}`).sort()).toEqual([
       'Braintrust=ok',
@@ -48,7 +80,34 @@ describe('runHealthChecks', () => {
       'SigNoz=ok',
       'Slack=ok'
     ])
-    expect(urls.some(url => url.includes('signoz.example/api/v1/version'))).toBe(true)
+    expect(urls.some(url => url.includes('mcp.us.signoz.cloud/mcp'))).toBe(true)
+    expect(results.find(result => result.name === 'LogRocket')?.toolSurface).toBe('3 MCP tools')
+    expect(results.find(result => result.name === 'GitHub')?.toolSurface).toBe('gh CLI')
+    expect(urls.filter(url => url.includes('api.braintrust.dev/mcp'))).toHaveLength(4)
+  })
+
+  test('fails Braintrust when discovery is public but the authenticated probe fails', async () => {
+    const results = await runHealthChecks(fullEnv, (async (
+      url: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
+      if (String(url).includes('api.braintrust.dev') && body?.method === 'tools/call') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: body.id,
+            result: { isError: true, content: [{ type: 'text', text: 'unauthorized' }] }
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      }
+      return okFetch(String(url), init)
+    }) as unknown as typeof fetch)
+
+    const braintrust = results.find(result => result.name === 'Braintrust')
+    expect(braintrust?.status).toBe('fail')
+    expect(braintrust?.error).toBe('MCP authenticated probe failed')
   })
 
   test('reports unconfigured when credentials are absent', async () => {
@@ -57,13 +116,16 @@ describe('runHealthChecks', () => {
   })
 
   test('reports fail with the error for non-2xx and slack ok=false', async () => {
-    const results = await runHealthChecks(fullEnv, (async (url: string | URL | Request) => {
+    const results = await runHealthChecks(fullEnv, (async (
+      url: string | URL | Request,
+      init?: RequestInit
+    ) => {
       const u = String(url)
       if (u.includes('slack.com')) {
         return new Response(JSON.stringify({ ok: false, error: 'invalid_auth' }), { status: 200 })
       }
-      if (u.includes('coda.io')) return new Response('nope', { status: 401 })
-      return okFetch(u)
+      if (u.includes('docs.superhuman.com')) return new Response('nope', { status: 401 })
+      return okFetch(u, init)
     }) as unknown as typeof fetch)
     const byName = new Map(results.map(r => [r.name, r]))
     expect(byName.get('Slack')?.status).toBe('fail')
@@ -137,7 +199,7 @@ const testLogger: Logger = {
 }
 
 describe('IntegrationHealth codex ping', () => {
-  test('lists the codex sandbox check first, ok when the ping resolves', async () => {
+  test('lists the codex sandbox and tool check first, ok when the ping resolves', async () => {
     const health = new IntegrationHealth({
       codexPing: async () => undefined,
       env: {},

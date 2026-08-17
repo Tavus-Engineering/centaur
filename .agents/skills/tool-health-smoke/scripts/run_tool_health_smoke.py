@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import asdict, dataclass
 import json
 import shutil
 import subprocess
 import sys
 import time
+from dataclasses import asdict, dataclass
 from typing import Any
 
 
@@ -67,9 +67,13 @@ def pick_detail(payload: dict[str, Any]) -> str:
         if isinstance(value, (dict, list)):
             continue
         key_l = str(key).lower()
-        if key_l in {"status", "ready", "count", "records_checked", "records_seen"}:
-            preferred.append(f"{key}={value}")
-        elif key_l.endswith(("_checked", "_count", "_results", "_seen")):
+        if key_l in {
+            "status",
+            "ready",
+            "count",
+            "records_checked",
+            "records_seen",
+        } or key_l.endswith(("_checked", "_count", "_results", "_seen")):
             preferred.append(f"{key}={value}")
     if not preferred:
         for key, value in details.items():
@@ -95,7 +99,7 @@ async def run_one(tool: str, timeout: float) -> ToolResult:
 
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.communicate()
         return ToolResult(
@@ -231,13 +235,9 @@ def main(argv: list[str]) -> int:
 
     try:
         tools = load_tools()
-    except Exception as exc:
+    except RuntimeError as exc:
         if args.json:
-            print(
-                json.dumps(
-                    {"ok": False, "error": str(exc), "results": []}, indent=2
-                )
-            )
+            print(json.dumps({"ok": False, "error": str(exc), "results": []}, indent=2))
         else:
             print(f"Overall: FAIL - {exc}")
         return 1
@@ -246,11 +246,18 @@ def main(argv: list[str]) -> int:
     exclude = parse_csv(args.exclude)
     filtered = bool(only or exclude)
     if only:
+        missing = sorted(only.difference(tools))
         tools = [tool for tool in tools if tool in only]
+    else:
+        missing = []
     if exclude:
         tools = [tool for tool in tools if tool not in exclude]
 
     results = asyncio.run(run_all(tools, args.timeout, args.concurrency))
+    results.extend(
+        ToolResult(tool=tool, status="FAIL", seconds=0.0, error="tool not discovered")
+        for tool in missing
+    )
     results = sorted(results, key=lambda row: row.tool)
     failures = [row for row in results if row.status == "FAIL"]
 
