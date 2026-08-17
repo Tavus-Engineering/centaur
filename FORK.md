@@ -25,4 +25,4 @@ line in the PR that syncs it back.
 | 5f1fb5b3 | slackbotv2: never act on DMs the bot is not a party to (user-scoped event subs delivered private human-to-human DMs as instructions) | [#32](https://github.com/Tavus-Engineering/centaur/pull/32) |
 | cc6dc669 | slack: keep Watch Agent investigations inline, acknowledge with :mag:, and require ISO 24495-1 plain-language output | [#33](https://github.com/Tavus-Engineering/centaur/pull/33) |
 | 376cb39e | upgrade Watch Agent to Centaur 2.0 with cross-thread recall, complete service deployment, signed API/file proxy repair, and durable Tavus tool grants | [#35](https://github.com/Tavus-Engineering/centaur/pull/35) |
-| c8e7b024 | align Watch Agent with GPT-5.6 Sol high and verified brokered LogRocket/Coda/Braintrust/SigNoz/GitHub/Linear/Slack tool access | [#36](https://github.com/Tavus-Engineering/centaur/pull/36) |
+| 92af396b | align Watch Agent with GPT-5.6 Sol high and verified brokered LogRocket/Coda/Braintrust/SigNoz/GitHub/Linear/Slack tool access | [#36](https://github.com/Tavus-Engineering/centaur/pull/36) |
