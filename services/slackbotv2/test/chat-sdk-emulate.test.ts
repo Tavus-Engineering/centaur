@@ -36,6 +36,7 @@ const USER_ID = 'USLACKBOTV2USER'
 const USER_B_ID = 'USLACKBOTV2USERB'
 const TEAM_ID = 'T000000001'
 const CHANNEL_ID = 'C000000001'
+const INVESTIGATIONS_CHANNEL_ID = 'C000000002'
 /** How real Slack renders a streamed message whose stream broke or was never stopped. */
 const BROKEN_STREAM_TEXT = ':warning: Something went wrong'
 
@@ -96,7 +97,7 @@ beforeAll(async () => {
           { name: 'tester', real_name: 'Test User', email: 'tester@example.com' },
           { name: 'builder', real_name: 'Build User', email: 'builder@example.com' }
         ],
-        channels: [{ name: 'slackbot-v2' }],
+        channels: [{ name: 'slackbot-v2' }, { name: 'agent-investigations' }],
         bots: [{ name: 'centaur' }],
         signing_secret: SIGNING_SECRET
       }
@@ -165,6 +166,113 @@ describe('slackbotv2', () => {
       channel: CHANNEL_ID,
       thread_ts: parent.ts
     })
+  })
+
+  it('keeps one reply inline, reuses an investigation thread, and continues only there', async () => {
+    const sharedState = createMemoryState()
+    await sharedState.connect()
+    bot = createTestBot({
+      investigationsChannelId: INVESTIGATIONS_CHANNEL_ID,
+      state: sharedState
+    })
+    const parent = await postUserMessage('Investigate the deploy regression.')
+
+    await sendSlackMention({
+      eventId: 'Ev-investigation-handoff-first',
+      text: 'start the investigation',
+      threadTs: parent.ts
+    })
+    expect(codexApi.executes).toHaveLength(1)
+    expect(codexApi.executes[0]?.threadKey).toBe(threadKey(parent.ts))
+
+    const secondRequest = await postUserMessage('Can you check the production logs too?', parent.ts)
+    await sendSlackMessageEvent({
+      channel: CHANNEL_ID,
+      eventId: 'Ev-investigation-handoff-second',
+      text: 'Can you check the production logs too?',
+      threadTs: parent.ts,
+      ts: secondRequest.ts
+    })
+    expect(codexApi.executes).toHaveLength(2)
+    const investigationThreadKey = codexApi.executes[1]?.threadKey ?? ''
+    expect(investigationThreadKey.startsWith(`slack:${INVESTIGATIONS_CHANNEL_ID}:`)).toBe(true)
+    const investigationThreadTs = investigationThreadKey.split(':').at(-1) ?? ''
+    expect(await sharedState.isSubscribed(investigationThreadKey)).toBe(true)
+
+    const sourceRepliesAfterHandoff = await threadTexts(parent.ts)
+    expect(sourceRepliesAfterHandoff.filter(text => text.includes('Executed request'))).toEqual([
+      expect.stringContaining('Executed request 1.')
+    ])
+    expect(sourceRepliesAfterHandoff).toContainEqual(
+      expect.stringContaining('open the investigation thread')
+    )
+    const investigationReplies = await threadTextsInChannel(
+      INVESTIGATIONS_CHANNEL_ID,
+      investigationThreadTs
+    )
+    expect(investigationReplies[0]).toContain('continued a Watch Agent request')
+    expect(investigationReplies).toContainEqual(expect.stringContaining('Executed request 2.'))
+
+    await sendSlackMention({
+      eventId: 'Ev-investigation-handoff-third',
+      text: 'also compare the last healthy deploy',
+      threadTs: parent.ts
+    })
+    expect(codexApi.executes).toHaveLength(3)
+    expect(codexApi.executes[2]?.threadKey).toBe(investigationThreadKey)
+    expect((await threadTexts(parent.ts)).some(text => text.includes('Executed request 3.'))).toBe(
+      false
+    )
+
+    const unmentioned = await postUserMessageInChannel(
+      INVESTIGATIONS_CHANNEL_ID,
+      'Now summarize the difference.',
+      investigationThreadTs
+    )
+    await sendSlackMessageEvent({
+      channel: INVESTIGATIONS_CHANNEL_ID,
+      eventId: 'Ev-investigation-handoff-unmentioned',
+      text: 'Now summarize the difference.',
+      threadTs: investigationThreadTs,
+      ts: unmentioned.ts
+    })
+    expect(codexApi.executes).toHaveLength(4)
+    expect(codexApi.executes[3]?.threadKey).toBe(investigationThreadKey)
+
+    const forSomebodyElse = await postUserMessageInChannel(
+      INVESTIGATIONS_CHANNEL_ID,
+      `<@${USER_B_ID}> can you confirm the rollout?`,
+      investigationThreadTs
+    )
+    await sendSlackMessageEvent({
+      channel: INVESTIGATIONS_CHANNEL_ID,
+      eventId: 'Ev-investigation-handoff-other-user',
+      text: `<@${USER_B_ID}> can you confirm the rollout?`,
+      threadTs: investigationThreadTs,
+      ts: forSomebodyElse.ts
+    })
+    expect(codexApi.executes).toHaveLength(4)
+
+    const explicitBotMention = await postUserMessageInChannel(
+      INVESTIGATIONS_CHANNEL_ID,
+      `<@${BOT_USER_ID}> include <@${USER_B_ID}>'s rollout note`,
+      investigationThreadTs
+    )
+    await sendSlackMessageEvent({
+      channel: INVESTIGATIONS_CHANNEL_ID,
+      eventId: 'Ev-investigation-handoff-explicit-bot',
+      text: `<@${BOT_USER_ID}> include <@${USER_B_ID}>'s rollout note`,
+      threadTs: investigationThreadTs,
+      ts: explicitBotMention.ts,
+      type: 'app_mention'
+    })
+    expect(codexApi.executes).toHaveLength(5)
+    expect(codexApi.executes[4]?.threadKey).toBe(investigationThreadKey)
+    expect(
+      (await threadTextsInChannel(INVESTIGATIONS_CHANNEL_ID, investigationThreadTs)).filter(
+        text => text.includes('Executed request')
+      )
+    ).toHaveLength(4)
   })
 
   it('joins newly-created public channels', async () => {
@@ -5541,6 +5649,53 @@ function threadKey(threadTs: string): string {
   return `slack:${CHANNEL_ID}:${threadTs}`
 }
 
+async function sendSlackMention(input: {
+  eventId: string
+  text: string
+  threadTs: string
+}): Promise<void> {
+  const text = `<@${BOT_USER_ID}> ${input.text}`
+  const mention = await postUserMessage(text, input.threadTs)
+  await sendSlackMessageEvent({
+    channel: CHANNEL_ID,
+    eventId: input.eventId,
+    text,
+    threadTs: input.threadTs,
+    ts: mention.ts,
+    type: 'app_mention'
+  })
+}
+
+async function sendSlackMessageEvent(input: {
+  channel: string
+  eventId: string
+  text: string
+  threadTs: string
+  ts: string
+  type?: 'app_mention' | 'message'
+}): Promise<void> {
+  const waits: Promise<unknown>[] = []
+  const response = await bot.app.request(
+    '/api/webhooks/slack',
+    signedSlackEvent({
+      event_id: input.eventId,
+      event: {
+        type: input.type ?? 'message',
+        user: USER_ID,
+        channel: input.channel,
+        team: TEAM_ID,
+        ts: input.ts,
+        thread_ts: input.threadTs,
+        text: input.text
+      }
+    }),
+    {},
+    waitUntilContext(waits)
+  )
+  expect(response.status).toBe(200)
+  await Promise.all(waits)
+}
+
 function apiMessageFromSlackEvent(input: {
   isMention: boolean
   text: string
@@ -5581,7 +5736,16 @@ async function postUserMessage(
   threadTs?: string,
   client: WebClient = slack
 ): Promise<{ ts: string }> {
-  const response = await client.chat.postMessage({ channel: CHANNEL_ID, text, thread_ts: threadTs })
+  return postUserMessageInChannel(CHANNEL_ID, text, threadTs, client)
+}
+
+async function postUserMessageInChannel(
+  channel: string,
+  text: string,
+  threadTs?: string,
+  client: WebClient = slack
+): Promise<{ ts: string }> {
+  const response = await client.chat.postMessage({ channel, text, thread_ts: threadTs })
   expect(response.ok).toBe(true)
   return { ts: String(response.ts) }
 }
@@ -5591,8 +5755,12 @@ async function threadText(threadTs: string): Promise<string> {
 }
 
 async function threadTexts(threadTs: string): Promise<string[]> {
+  return threadTextsInChannel(CHANNEL_ID, threadTs)
+}
+
+async function threadTextsInChannel(channel: string, threadTs: string): Promise<string[]> {
   const response = await slack.conversations.replies({
-    channel: CHANNEL_ID,
+    channel,
     ts: threadTs,
     limit: 20
   })

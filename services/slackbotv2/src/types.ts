@@ -189,6 +189,11 @@ export type SlackbotV2Options = {
   handoffRetryDelaysMs?: readonly number[]
   /** Milliseconds before an idle execution pauses its sandbox. Defaults to up to 3h. */
   idleTimeoutMs?: number
+  /**
+   * Slack conversation that receives second-and-later turns from ordinary
+   * channel threads. Unset keeps every response inline.
+   */
+  investigationsChannelId?: string
   logger?: Logger
   maxDurationMs?: number
   postgresUrl?: string

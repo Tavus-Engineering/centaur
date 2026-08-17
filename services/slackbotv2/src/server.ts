@@ -75,6 +75,7 @@ const options: SlackbotV2Options = {
       }
     : {},
   idleTimeoutMs: optionalNumberEnv('SESSION_IDLE_TIMEOUT_MS'),
+  investigationsChannelId: optionalEnv('SLACKBOTV2_INVESTIGATIONS_CHANNEL_ID'),
   maxDurationMs: optionalNumberEnv('SESSION_MAX_DURATION_MS'),
   messageOverridesStrategy: createMessageOverridesStrategy(),
   postgresUrl:
@@ -108,6 +109,7 @@ console.log(
     service: 'slackbotv2',
     activity_summary_status_enabled: options.activitySummaryStatusEnabled,
     auto_join_created_channels_enabled: options.autoJoinCreatedChannels,
+    investigations_channel_enabled: Boolean(options.investigationsChannelId),
     message_overrides_strategy: messageOverridesStrategyMode,
     message_overrides_strategy_enabled:
       messageOverridesStrategyMode !== 'llm' || Boolean(messageOverridesStrategyApiKey),
