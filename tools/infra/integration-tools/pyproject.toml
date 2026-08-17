@@ -10,13 +10,19 @@ dependencies = [
 ]
 
 [project.scripts]
-braintrust = "centaur_tool_integrations.cli:braintrust_app"
-coda = "centaur_tool_integrations.cli:coda_app"
-github = "centaur_tool_integrations.cli:github_app"
-logrocket = "centaur_tool_integrations.cli:logrocket_app"
+braintrust = "centaur_tool_braintrust.cli:app"
+coda = "centaur_tool_coda.cli:app"
+github = "centaur_tool_github.cli:app"
+logrocket = "centaur_tool_logrocket.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["centaur_tool_integrations"]
+packages = [
+    "centaur_tool_braintrust",
+    "centaur_tool_coda",
+    "centaur_tool_github",
+    "centaur_tool_integrations",
+    "centaur_tool_logrocket",
+]
 
 [build-system]
 requires = ["hatchling"]
