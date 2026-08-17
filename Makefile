@@ -95,10 +95,10 @@ deploy:
 	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_API_DEPLOYMENT)" --timeout=180s; \
 	for tool in $(CENTAUR_REQUIRED_INFRA_TOOLS); do \
 	  kubectl -n "$(CENTAUR_NAMESPACE)" exec "deploy/$(CENTAUR_API_DEPLOYMENT)" -- \
-	    centaur-perms --tools-dir /app/tools roles grant infra --tool "$${tool}"; \
+	    env TOOL_DIRS= centaur-perms --tools-dir /app/tools roles grant infra --tool "$${tool}"; \
 	done; \
-	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_SLACKBOTV2_DEPLOYMENT)" --timeout=180s; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "daemonset/$(CENTAUR_REPO_CACHE_DAEMONSET)" --timeout=180s; \
+	kubectl -n "$(CENTAUR_NAMESPACE)" rollout status "deploy/$(CENTAUR_SLACKBOTV2_DEPLOYMENT)" --timeout=180s; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" get deploy "$(CENTAUR_API_DEPLOYMENT)" \
 	  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'; \
 	kubectl -n "$(CENTAUR_NAMESPACE)" get deploy "$(CENTAUR_API_DEPLOYMENT)" \
