@@ -43,7 +43,9 @@ class SignozClient:
         return api_key
 
     def _signoz_url(self) -> str:
-        signoz_url = _optional_config("SIGNOZ_URL").rstrip("/")
+        # Keep the literal placeholder intact so iron-proxy can replace the
+        # outbound X-SigNoz-URL header with the brokered value.
+        signoz_url = secret("SIGNOZ_URL", "").strip().rstrip("/")
         if not signoz_url:
             raise RuntimeError("SIGNOZ_URL is required for SigNoz MCP header auth.")
         return signoz_url

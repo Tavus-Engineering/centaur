@@ -911,9 +911,9 @@ describe('slackbotv2', () => {
     ) as Record<string, unknown>
     expect(followUpInput.model).toBeUndefined()
     expect(followUpInput.provider).toBeUndefined()
-    // The Tavus default GPT-5.5 model does not support Max, so the inferred
-    // effort is dropped while the explicit Nanocodex harness remains sticky.
-    expect(followUpInput.reasoning).toBeUndefined()
+    // The Tavus default GPT-5.6 Sol model supports Max, so the inferred effort
+    // remains while the explicit Nanocodex harness stays sticky.
+    expect(followUpInput.reasoning).toBe('max')
     const defaultInput = JSON.parse(
       codexApi.executes[2]!.body.input_lines.at(-1)!
     ) as Record<string, unknown>
@@ -1051,7 +1051,7 @@ describe('slackbotv2', () => {
       .map(block => JSON.stringify(block))
       .find(text => text.includes('Open chat in Console'))
     expect(footer).toContain('Open chat in Console')
-    expect(footer).not.toContain('GPT-5.5')
+    expect(footer).not.toContain('GPT-5.6-SOL')
     expect(footer).not.toContain('Codex')
   })
 
@@ -1065,7 +1065,7 @@ describe('slackbotv2', () => {
         .filter(call => call.method === 'chat.stopStream')
         .flatMap(call => (Array.isArray(call.body.blocks) ? (call.body.blocks as unknown[]) : []))
         .map(block => JSON.stringify(block))
-        .filter(text => text.includes('GPT-5.5'))
+        .filter(text => text.includes('GPT-5.6-SOL'))
 
     const parent = await postUserMessage('Response metadata thread context.')
     const firstMention = await postUserMessage(`<@${BOT_USER_ID}> start`, parent.ts)
@@ -1091,7 +1091,7 @@ describe('slackbotv2', () => {
     await Promise.all(firstWaits)
     expect(metadataBlockTexts(slackApi.calls)).toHaveLength(1)
     expect(metadataBlockTexts(slackApi.calls)[0]).toContain('Codex')
-    expect(metadataBlockTexts(slackApi.calls)[0]).toContain('Medium')
+    expect(metadataBlockTexts(slackApi.calls)[0]).toContain('High')
     expect(metadataBlockTexts(slackApi.calls)[0]).not.toContain('Fast')
     expect(metadataBlockTexts(slackApi.calls)[0]).not.toContain('Open chat in Console')
 
@@ -1134,7 +1134,7 @@ describe('slackbotv2', () => {
         .filter(call => call.method === 'chat.stopStream')
         .flatMap(call => (Array.isArray(call.body.blocks) ? (call.body.blocks as unknown[]) : []))
         .map(block => JSON.stringify(block))
-        .filter(text => text.includes('GPT-5.5'))
+        .filter(text => text.includes('GPT-5.6-SOL'))
 
     const parent = await postUserMessage('Service tier thread context.')
     const firstMention = await postUserMessage(`<@${BOT_USER_ID}> start`, parent.ts)
@@ -1231,7 +1231,7 @@ describe('slackbotv2', () => {
       .map(block => JSON.stringify(block))
       .find(text => text.includes('Open chat in Console'))
     expect(footer).toContain('Nanocodex')
-    expect(footer).toContain('Medium')
+    expect(footer).toContain('High')
     expect(footer).not.toContain('Codex*')
     expect(codexApi.creates[0]?.body.harness_type).toBe('codex')
     expect(codexApi.executes[0]?.body.metadata).toMatchObject({

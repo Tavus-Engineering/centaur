@@ -1,5 +1,5 @@
-model = "gpt-5.5"
-model_reasoning_effort = "medium"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
 personality = "pragmatic"
 model_verbosity = "low"
 service_tier = "flex"
@@ -48,6 +48,38 @@ base_url = "https://api.ai.meta.com/v1"
 env_key = "META_AI_API_KEY"
 wire_api = "responses"
 requires_openai_auth = false
+
+# These hosted MCP servers mirror the connector surfaces available in the
+# local Codex app. They are optional so deployments without a matching secret
+# grant still start; configured deployments fail their explicit tool-health
+# smoke instead of silently treating an upstream credential check as access.
+[mcp_servers.Coda]
+url = "https://docs.superhuman.com/apis/mcp"
+bearer_token_env_var = "CODA_API_KEY"
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+[mcp_servers.braintrust]
+url = "https://api.braintrust.dev/mcp"
+bearer_token_env_var = "BRAINTRUST_API_KEY"
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+[mcp_servers.logrocket]
+url = "https://mcp.logrocket.com/mcp"
+bearer_token_env_var = "LOGROCKET_API_TOKEN"
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 600
+
+[mcp_servers.signoz]
+url = "https://mcp.us.signoz.cloud/mcp"
+env_http_headers = { "SIGNOZ-API-KEY" = "SIGNOZ_API_KEY", "X-SigNoz-URL" = "SIGNOZ_URL" }
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 120
 
 [projects."/"]
 trust_level = "trusted"
