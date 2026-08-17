@@ -79,6 +79,10 @@ spec:
               value: {{ .Values.apiRs.activitySummary.enabled | quote }}
             - name: SLACKBOTV2_AUTO_JOIN_CREATED_CHANNELS
               value: {{ .Values.slackbotv2.autoJoinCreatedChannels | quote }}
+{{- if .Values.slackbotv2.investigationsChannelId }}
+            - name: SLACKBOTV2_INVESTIGATIONS_CHANNEL_ID
+              value: {{ .Values.slackbotv2.investigationsChannelId | quote }}
+{{- end }}
             - name: SLACKBOTV2_RESPONSE_METADATA_MODE
               value: {{ .Values.slackbotv2.responseMetadataMode | quote }}
             - name: SLACKBOTV2_RESPONSE_SERVICE_TIER_ENABLED

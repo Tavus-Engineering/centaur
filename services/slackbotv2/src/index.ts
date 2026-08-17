@@ -69,7 +69,12 @@ import {
   reasoningForModel,
   type SlackContextBlock
 } from './console-session-link'
-import { resolveChannelDefault } from './channel-defaults'
+import { channelIdFromThreadId, resolveChannelDefault } from './channel-defaults'
+import {
+  InvestigationHandoffManager,
+  isDirectedAtWatchAgent,
+  isLikelyWatchAgentFollowup
+} from './investigation-handoff'
 import { extractMessageOverrides, type HarnessOverrides } from './overrides'
 import { createFlagMessageOverridesStrategy } from './message-overrides-strategy'
 import {
@@ -183,6 +188,7 @@ type PendingLateSlackFileMention = {
   channel: string
   message: ChatMessage
   mentionTs: string
+  sourceThreadTs: string
   teamId: string
   thread: Thread<SlackbotV2ThreadState>
   user: string
@@ -283,6 +289,11 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     logger
   })
   const lateSlackFiles = createLateSlackFileRepair(options, state)
+  const investigationHandoff = new InvestigationHandoffManager({
+    options,
+    state,
+    threadForId: threadId => chat.thread(threadId)
+  })
   const integrationHealth = new IntegrationHealth({
     codexPing: () => codexSandboxPing(options),
     logger
@@ -364,9 +375,10 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
   chat.onNewMention(async (thread, message) => {
     if (!(await isAllowedSlackMessage(message, options, logger))) return
     if (!(await dmGuard.allows(thread.id))) return
-    lateSlackFiles.rememberFilelessMention(thread, message)
-    await handleSlackMessageHandoff(thread, message, {
+    await dispatchSlackMessageHandoff(thread, message, {
       assistantStatusRequested: true,
+      investigationHandoff,
+      lateSlackFiles,
       mode: 'execute',
       options,
       state,
@@ -383,8 +395,10 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     if (!(await isAllowedSlackMessage(message, options, logger))) return
     if (!(await dmGuard.allows(thread.id))) return
     message.isMention = true
-    await handleSlackMessageHandoff(thread, message, {
+    await dispatchSlackMessageHandoff(thread, message, {
       assistantStatusRequested: true,
+      investigationHandoff,
+      lateSlackFiles,
       mode: 'execute',
       options,
       state,
@@ -397,7 +411,19 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     if (!(await isAllowedSlackMessage(message, options, logger))) return
     if (!(await dmGuard.allows(thread.id))) return
     if (slackRichTextMentionsUser(message.raw, options.botUserId)) message.isMention = true
-    if (message.isMention !== true) {
+    const isInvestigationThread =
+      Boolean(options.investigationsChannelId) &&
+      channelIdFromThreadId(thread.id) === options.investigationsChannelId
+    const threadState = message.isMention === true ? null : ((await thread.state) ?? {})
+    const isSourceFollowup =
+      !isInvestigationThread &&
+      (threadState?.activeExecution === true || (threadState?.executedMessageIds?.length ?? 0) > 0) &&
+      isLikelyWatchAgentFollowup(message, options.botUserId)
+    if (
+      message.isMention !== true &&
+      !isSourceFollowup &&
+      (!isInvestigationThread || !isDirectedAtWatchAgent(message, options.botUserId))
+    ) {
       traceLog(
         options,
         'slackbotv2_subscribed_message_without_mention_ignored',
@@ -406,9 +432,10 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       )
       return
     }
-    lateSlackFiles.rememberFilelessMention(thread, message)
-    await handleSlackMessageHandoff(thread, message, {
+    await dispatchSlackMessageHandoff(thread, message, {
       assistantStatusRequested: true,
+      investigationHandoff,
+      lateSlackFiles,
       mode: 'execute',
       options,
       state,
@@ -525,10 +552,57 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
   return { app, chat }
 }
 
+type LateSlackFileRepair = ReturnType<typeof createLateSlackFileRepair>
+
+async function dispatchSlackMessageHandoff(
+  sourceThread: Thread<SlackbotV2ThreadState>,
+  sourceMessage: ChatMessage,
+  input: {
+    assistantStatusRequested: boolean
+    investigationHandoff: InvestigationHandoffManager
+    lateSlackFiles: LateSlackFileRepair
+    mode: SlackbotV2MessageMode
+    options: SlackbotV2Options
+    state: StateAdapter
+    subscribe?: boolean
+    trigger: string
+  }
+): Promise<void> {
+  const route =
+    input.mode === 'execute'
+      ? await input.investigationHandoff.route(sourceThread, sourceMessage)
+      : null
+  const thread = route?.thread ?? sourceThread
+  const message = route?.message ?? sourceMessage
+  input.lateSlackFiles.rememberFilelessMention(
+    thread,
+    message,
+    route
+      ? {
+          channel: route.sourceChannelId,
+          threadTs: route.sourceThreadTs
+        }
+      : undefined
+  )
+  await handleSlackMessageHandoff(thread, message, {
+    acknowledgement: { message: sourceMessage, thread: sourceThread },
+    assistantStatusRequested: input.assistantStatusRequested,
+    mode: input.mode,
+    options: input.options,
+    state: input.state,
+    subscribe: route ? true : input.subscribe,
+    trigger: input.trigger
+  })
+}
+
 async function handleSlackMessageHandoff(
   thread: Thread<SlackbotV2ThreadState>,
   message: ChatMessage,
   input: {
+    acknowledgement?: {
+      message: ChatMessage
+      thread: Thread<SlackbotV2ThreadState>
+    }
     assistantStatusRequested: boolean
     mode: SlackbotV2MessageMode
     options: SlackbotV2Options
@@ -555,11 +629,18 @@ async function handleSlackMessageHandoff(
     backgroundWaitUntil(assistantStatus.then(() => undefined).catch(() => undefined))
   }
   try {
-    if (await handleStopCommand(thread, message, input.options, input.trigger)) {
+    const commandMessage = input.acknowledgement?.message ?? message
+    if (await handleStopCommand(thread, commandMessage, input.options, input.trigger)) {
       return
     }
-    if (input.assistantStatusRequested && !thread.isDM) {
-      await acknowledgeInvestigation(thread, message, input.options, trace)
+    const acknowledgement = input.acknowledgement ?? { message, thread }
+    if (input.assistantStatusRequested && !acknowledgement.thread.isDM) {
+      await acknowledgeInvestigation(
+        acknowledgement.thread,
+        acknowledgement.message,
+        input.options,
+        trace
+      )
     }
     if (input.mode === 'execute' && isSlackDmThreadId(thread.id)) {
       const requesterUserId = slackUserIdForMessage(message)
@@ -2958,12 +3039,16 @@ function createLateSlackFileRepair(options: SlackbotV2Options, state: StateAdapt
   }
 
   return {
-    rememberFilelessMention(thread: Thread<SlackbotV2ThreadState>, message: ChatMessage): void {
+    rememberFilelessMention(
+      thread: Thread<SlackbotV2ThreadState>,
+      message: ChatMessage,
+      source?: { channel: string; threadTs: string }
+    ): void {
       if (message.isMention !== true) return
       const raw = slackRawRecord(message)
       if (slackFiles(raw).length > 0 || message.attachments.length > 0) return
       const teamId = stringField(raw.team) || stringField(raw.team_id)
-      const channel = stringField(raw.channel)
+      const channel = source?.channel ?? stringField(raw.channel)
       const user = stringField(raw.user)
       const mentionTs = stringField(raw.ts) || message.id
       if (!teamId || !channel || !user || !mentionTs) return
@@ -2974,6 +3059,7 @@ function createLateSlackFileRepair(options: SlackbotV2Options, state: StateAdapt
         channel,
         message,
         mentionTs,
+        sourceThreadTs: source?.threadTs ?? (stringField(raw.thread_ts) || mentionTs),
         teamId,
         thread,
         user
@@ -3097,13 +3183,14 @@ function lateSlackFileSyntheticMessage(
   event: Record<string, unknown>
 ): ChatMessage {
   const eventTs = stringField(event.ts) || randomUUID()
+  const pendingRaw = slackRawRecord(pending.message)
   const raw: Record<string, unknown> = {
     ...event,
-    channel: pending.channel,
+    channel: stringField(pendingRaw.channel) || pending.channel,
     team: stringField(event.team) || pending.teamId,
     team_id: stringField(event.team_id) || pending.teamId,
     text: stringField(event.text) || LATE_SLACK_FILE_MESSAGE_TEXT,
-    thread_ts: stringField(event.thread_ts) || pending.mentionTs,
+    thread_ts: stringField(pendingRaw.thread_ts) || pending.mentionTs,
     ts: eventTs
   }
   return new ChatSdkMessage({
@@ -3248,8 +3335,7 @@ function slackEventTeamId(
 }
 
 function slackThreadTsForPendingMention(entry: PendingLateSlackFileMention): string {
-  const raw = slackRawRecord(entry.message)
-  return stringField(raw.thread_ts) || entry.mentionTs
+  return entry.sourceThreadTs
 }
 
 function slackTsToMs(ts: string): number {

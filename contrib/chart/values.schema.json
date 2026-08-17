@@ -370,6 +370,7 @@
     "slackbotv2": {
       "type": "object",
       "properties": {
+        "investigationsChannelId": { "type": "string" },
         "mcpPublicUrl": { "type": "string" },
         "responseMetadataMode": {
           "type": "string",

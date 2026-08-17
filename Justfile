@@ -168,6 +168,16 @@ deploy:
         --set sandbox.claudeCodeAuthMode=${CLAUDE_CODE_AUTH_MODE}
       )
     fi
+    investigations_channel_id="${CENTAUR_SLACKBOTV2_INVESTIGATIONS_CHANNEL_ID:-}"
+    if [[ -n "${investigations_channel_id}" ]]; then
+      if [[ ! "${investigations_channel_id}" =~ ^[CGD][A-Z0-9]+$ ]]; then
+        echo "CENTAUR_SLACKBOTV2_INVESTIGATIONS_CHANNEL_ID must be a Slack conversation ID" >&2
+        exit 1
+      fi
+      extra_args+=(
+        --set-string "slackbotv2.investigationsChannelId=${investigations_channel_id}"
+      )
+    fi
     # Layer an optional local-only values file (e.g. Tailscale Funnel ingress) on
     # top of values.dev.yaml. Kept out of the shared dev values so teammates'
     # `just up` is unaffected. Appended after -f {{dev_values}} so it wins

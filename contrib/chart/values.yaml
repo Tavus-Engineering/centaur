@@ -501,6 +501,11 @@ slackbotv2:
   # Join newly-created public channels after subscribed channel_created events.
   # Requires the Slack app to grant channels:read and channels:join.
   autoJoinCreatedChannels: false
+  # Optional Slack conversation ID for long-running investigations. Outside
+  # this channel, Watch Agent answers once per thread and moves later turns to
+  # one reusable thread here. Inside it, replies may continue without another
+  # bot mention unless they explicitly address somebody else.
+  investigationsChannelId: ""
   # Append model, harness, and reasoning effort to the first live streamed
   # Slack assistant response, every response, or no responses. Independent of
   # the optional Console link below.

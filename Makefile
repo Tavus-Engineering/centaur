@@ -12,6 +12,7 @@ CENTAUR_TOOLS_REPOSITORY ?= Tavus-Engineering/centaur
 CENTAUR_K3S_CTR ?= sudo k3s ctr
 CENTAUR_API_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-api-rs
 CENTAUR_SLACKBOTV2_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-slackbotv2
+CENTAUR_SLACKBOTV2_INVESTIGATIONS_CHANNEL_ID ?=
 CENTAUR_CONSOLE_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console
 CENTAUR_CONSOLE_WORKER_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console-worker
 CENTAUR_REPO_CACHE_DAEMONSET ?= $(CENTAUR_RELEASE)-centaur-repo-cache
@@ -28,6 +29,15 @@ deploy:
 	SLACKBOTV2_IMAGE="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	CONSOLE_IMAGE="$(CENTAUR_CONSOLE_IMAGE_REPOSITORY):fork-$${SHA}"; \
 	IRON_PROXY_IMAGE="$(CENTAUR_IRON_PROXY_IMAGE_REPOSITORY):fork-$${SHA}"; \
+	SLACKBOTV2_EXTRA_ARGS=(); \
+	INVESTIGATIONS_CHANNEL_ID="$${CENTAUR_SLACKBOTV2_INVESTIGATIONS_CHANNEL_ID:-}"; \
+	if [[ -n "$${INVESTIGATIONS_CHANNEL_ID}" && ! "$${INVESTIGATIONS_CHANNEL_ID}" =~ ^[CGD][A-Z0-9]+$$ ]]; then \
+	  echo "CENTAUR_SLACKBOTV2_INVESTIGATIONS_CHANNEL_ID must be a Slack conversation ID" >&2; \
+	  exit 1; \
+	fi; \
+	if [[ -n "$${INVESTIGATIONS_CHANNEL_ID}" ]]; then \
+	  SLACKBOTV2_EXTRA_ARGS+=(--set-string "slackbotv2.investigationsChannelId=$${INVESTIGATIONS_CHANNEL_ID}"); \
+	fi; \
 	CENTAUR_POSTGRES_DSN_B64="$$(kubectl -n "$(CENTAUR_NAMESPACE)" get secret centaur-infra-env \
 	  -o 'jsonpath={.data.CENTAUR_POSTGRES_DSN}')"; \
 	if [[ -z "$${CENTAUR_POSTGRES_DSN_B64}" ]]; then \
@@ -84,6 +94,7 @@ deploy:
 	  --set slackbotv2.image.repository="$(CENTAUR_SLACKBOTV2_IMAGE_REPOSITORY)" \
 	  --set slackbotv2.image.tag="fork-$${SHA}" \
 	  --set slackbotv2.image.pullPolicy=IfNotPresent \
+	  "$${SLACKBOTV2_EXTRA_ARGS[@]}" \
 	  --set console.image.repository="$(CENTAUR_CONSOLE_IMAGE_REPOSITORY)" \
 	  --set console.image.tag="fork-$${SHA}" \
 	  --set console.image.pullPolicy=IfNotPresent \
