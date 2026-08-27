@@ -1542,7 +1542,6 @@ fn build_iron_proxy_network_policies(
                     control_target,
                     otlp_egress,
                     observability_enabled,
-                    resolved.api_server_enabled,
                 )),
             }),
         },
@@ -1560,7 +1559,6 @@ fn proxy_egress_rules(
     control_target: &ControlPlaneEgressTarget,
     otlp_egress: Option<&OtlpEgressTarget>,
     observability_enabled: bool,
-    api_server_enabled: bool,
 ) -> Vec<NetworkPolicyEgressRule> {
     // Upstream egress: 443/5432 for normal traffic, plus the iron-control port
     // (deduped) so a sync-mode proxy can reach the control plane. Public
@@ -1577,19 +1575,18 @@ fn proxy_egress_rules(
         vec![network_port(PG_LISTENER_PORT)],
     ));
     rules.push(egress_to(vec![public_ipv4_peer()], upstream_ports));
-    if api_server_enabled {
+    // Every sandbox reaches api-rs through its proxy. Route-level access is
+    // enforced by the principal JWT's explicit capability claims, so network
+    // reachability must not remain coupled to observability.
+    rules.push(egress_to(
+        vec![pod_peer(iron_proxy.api_pod_labels.clone())],
+        vec![network_port(8000), network_port(8080)],
+    ));
+    if observability_enabled && let Some(target) = otlp_egress {
         rules.push(egress_to(
-            vec![pod_peer(iron_proxy.api_pod_labels.clone())],
-            vec![network_port(8000), network_port(8080)],
+            vec![namespace_peer(&target.namespace)],
+            vec![network_port(target.port)],
         ));
-    }
-    if observability_enabled {
-        if let Some(target) = otlp_egress {
-            rules.push(egress_to(
-                vec![namespace_peer(&target.namespace)],
-                vec![network_port(target.port)],
-            ));
-        }
     }
     if matches!(
         iron_proxy.source_policy.kind,
@@ -2641,7 +2638,7 @@ mod tests {
             port: 8000,
         };
 
-        let resolved = resolved_with_capabilities(true, false);
+        let resolved = resolved_with_observability(true);
         let policies = build_iron_proxy_network_policies(
             &id,
             &resolved,
@@ -2704,7 +2701,7 @@ mod tests {
             port: 8000,
         };
 
-        let resolved = resolved_with_capabilities(false, false);
+        let resolved = resolved_with_observability(false);
         let policies = build_iron_proxy_network_policies(
             &id,
             &resolved,
@@ -2735,7 +2732,7 @@ mod tests {
                 .iter()
                 .any(|rule| rule_allows_namespace_port(rule, "laminar", 8000))
         );
-        assert!(!proxy_egress.iter().any(|rule| {
+        assert!(proxy_egress.iter().any(|rule| {
             rule.to.as_ref().is_some_and(|peers| {
                 peers.iter().any(|peer| {
                     peer.pod_selector.as_ref().is_some_and(|selector| {
@@ -2776,11 +2773,11 @@ mod tests {
     }
 
     #[test]
-    fn api_capability_allows_api_egress_without_observability() {
+    fn api_egress_does_not_require_observability() {
         let id = SandboxId::new("asbx-test");
         let iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
         let control_target = control_target();
-        let resolved = resolved_with_capabilities(false, true);
+        let resolved = resolved_with_observability(false);
 
         let policies = build_iron_proxy_network_policies(
             &id,

@@ -584,6 +584,7 @@ async function dispatchSlackMessageHandoff(
     mode: SlackbotV2MessageMode
     options: SlackbotV2Options
     state: StateAdapter
+    steeringReactions: SteeringReactionController
     subscribe?: boolean
     trigger: string
   }
@@ -610,6 +611,7 @@ async function dispatchSlackMessageHandoff(
     mode: input.mode,
     options: input.options,
     state: input.state,
+    steeringReactions: input.steeringReactions,
     subscribe: route ? true : input.subscribe,
     trigger: input.trigger
   })

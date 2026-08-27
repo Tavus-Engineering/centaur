@@ -152,14 +152,14 @@ describe('slackbotv2', () => {
     await Promise.all(waits)
     expect(codexApi.executes).toHaveLength(1)
     expect(codexApi.executes[0]?.threadKey).toBe(threadKey(parent.ts))
-    const reactions = await slack.reactions.get({
-      channel: CHANNEL_ID,
-      timestamp: mention.ts
-    })
-    expect(reactions.message?.reactions).toContainEqual(
+    expect(slackApi.calls).toContainEqual(
       expect.objectContaining({
-        name: 'mag',
-        users: expect.arrayContaining([BOT_USER_ID])
+        method: 'reactions.add',
+        body: expect.objectContaining({
+          channel: CHANNEL_ID,
+          name: 'mag',
+          timestamp: mention.ts
+        })
       })
     )
     expect(slackStreamTranscripts(slackApi.calls)[0]?.start.body).toMatchObject({
@@ -2601,7 +2601,11 @@ describe('slackbotv2', () => {
     expect(firstFollowUpTexts.at(-1)).toBe(`@${BOT_USER_ID} add this while still running`)
     expect(
       slackApi.calls
-        .filter(call => call.method === 'reactions.add' || call.method === 'reactions.remove')
+        .filter(
+          call =>
+            (call.method === 'reactions.add' || call.method === 'reactions.remove')
+            && stringField(call.body.name) === 'hourglass_flowing_sand'
+        )
         .map(call => ({
           channel: stringField(call.body.channel),
           method: call.method,
@@ -2649,6 +2653,19 @@ describe('slackbotv2', () => {
     bot = createTestBot({
       logger: captureLogger(logs),
       steeringReactionEnabled: true
+    })
+    slackApi.respondToNextReaction(200, {
+      ok: false,
+      error: 'missing_scope',
+      needed: 'reactions:write'
+    })
+    // The fork's persistent :mag: acknowledgement runs for the initial turn
+    // and the first follow-up before the upstream steering acknowledgement,
+    // so model all three calls failing without scope.
+    slackApi.respondToNextReaction(200, {
+      ok: false,
+      error: 'missing_scope',
+      needed: 'reactions:write'
     })
     slackApi.respondToNextReaction(200, {
       ok: false,
@@ -2704,7 +2721,13 @@ describe('slackbotv2', () => {
       await Promise.all(waits)
     }
 
-    expect(slackApi.calls.filter(call => call.method === 'reactions.add')).toHaveLength(1)
+    expect(
+      slackApi.calls.filter(
+        call =>
+          call.method === 'reactions.add'
+          && stringField(call.body.name) === 'hourglass_flowing_sand'
+      )
+    ).toHaveLength(1)
     expect(slackApi.calls.some(call => call.method === 'reactions.remove')).toBe(false)
     expect(logData(logs, 'slackbotv2_steering_reaction_auto_disabled')).toEqual(
       expect.objectContaining({
@@ -5181,7 +5204,13 @@ describe('slackbotv2', () => {
       waitUntilContext(steeringWaits)
     )
     expect(steeringResponse.status).toBe(200)
-    await waitFor(() => slackApi.calls.some(call => call.method === 'reactions.add'))
+    await waitFor(() =>
+      slackApi.calls.some(
+        call =>
+          call.method === 'reactions.add'
+          && stringField(call.body.name) === 'hourglass_flowing_sand'
+      )
+    )
     expect(slackApi.calls.some(call => call.method === 'reactions.remove')).toBe(false)
 
     const key = threadKey(parent.ts)
@@ -5197,7 +5226,11 @@ describe('slackbotv2', () => {
     await waitFor(() => slackApi.calls.some(call => call.method === 'reactions.remove'), 3000)
     expect(
       slackApi.calls
-        .filter(call => call.method === 'reactions.add' || call.method === 'reactions.remove')
+        .filter(
+          call =>
+            (call.method === 'reactions.add' || call.method === 'reactions.remove')
+            && stringField(call.body.name) === 'hourglass_flowing_sand'
+        )
         .map(call => ({
           method: call.method,
           timestamp: stringField(call.body.timestamp)
