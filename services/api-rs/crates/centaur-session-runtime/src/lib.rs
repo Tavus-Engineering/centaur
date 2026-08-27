@@ -13,9 +13,9 @@ use std::{
 
 use centaur_iron_control::{IronControlError, Principal, SessionRegistrar};
 use centaur_sandbox_core::{
-    Mount, RepoCacheAccess, ResourceRequirements, SandboxBackend,
-    SandboxCapabilities as BackendSandboxCapabilities, SandboxError, SandboxId, SandboxIoGuard,
-    SandboxRead, SandboxSpec, SandboxStatus, SandboxWrite,
+    Mount, RepoCacheAccess, ResourceRequirements, SANDBOX_AGENT_HOME, SandboxBackend,
+    SandboxCapabilities as BackendSandboxCapabilities, SandboxError, SandboxFile, SandboxId,
+    SandboxIoGuard, SandboxRead, SandboxSpec, SandboxStatus, SandboxWrite,
 };
 use centaur_sandbox_manager::{
     SandboxManager, SandboxReaper, SandboxReaperConfig, WarmPoolConfig, WarmPoolError,
@@ -195,6 +195,8 @@ pub struct PersonaContext {
     pub source_path: String,
     pub source_ref: Option<String>,
     pub prompt_hash: String,
+    #[serde(skip_serializing)]
+    pub prompt: String,
     pub defaulted: bool,
     pub overlay_chain: Vec<String>,
 }
@@ -281,6 +283,7 @@ impl PersonaRegistry {
             source_path: persona.source_path.clone(),
             source_ref: persona.source_ref.clone(),
             prompt_hash: persona.prompt_hash.clone(),
+            prompt: persona.prompt.clone(),
             defaulted,
             overlay_chain: self.overlay_chain.clone(),
         })
@@ -374,11 +377,32 @@ pub struct InterruptExecutionOutcome {
 #[derive(Debug)]
 pub struct ToolHostCallInput {
     pub principal_id: String,
+    pub console_user_email: Option<String>,
+    pub console_user_name: Option<String>,
     pub token_id: Option<String>,
     pub tool_name: String,
     pub method: String,
     pub arguments: Value,
     pub timeout: Duration,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ToolHostToolFilter {
+    pub allowlist: Option<String>,
+    pub blocklist: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolHostCallPolicy {
+    principal_id: String,
+    tool_filter: ToolHostToolFilter,
+    sandbox_capabilities: centaur_session_core::SandboxCapabilities,
+}
+
+impl ToolHostCallPolicy {
+    pub fn tool_filter(&self) -> &ToolHostToolFilter {
+        &self.tool_filter
+    }
 }
 
 #[derive(Debug)]
@@ -949,6 +973,7 @@ impl SessionRuntime {
     pub async fn run_tool_host_call(
         &self,
         input: ToolHostCallInput,
+        policy: ToolHostCallPolicy,
     ) -> Result<ToolHostCallOutput, SessionRuntimeError> {
         let principal_id = input.principal_id.trim().to_owned();
         let tool_name = input.tool_name.trim().to_owned();
@@ -973,6 +998,11 @@ impl SessionRuntime {
                 "tool host timeout must be non-zero".to_owned(),
             ));
         }
+        if policy.principal_id != principal_id {
+            return Err(SessionRuntimeError::BadRequest(
+                "tool host policy principal does not match the call principal".to_owned(),
+            ));
+        }
 
         let thread_key = tool_host_thread_key(&principal_id)?;
         let input = ToolHostCallInput {
@@ -984,7 +1014,8 @@ impl SessionRuntime {
         let call_lock = self.tool_host_call_lock(&thread_key);
         let result = {
             let _call_guard = call_lock.lock().await;
-            self.locked_tool_host_call(&thread_key, input).await
+            self.locked_tool_host_call(&thread_key, input, policy.sandbox_capabilities)
+                .await
         };
         // Drop our clone so an idle entry is only referenced by the map, then
         // evict it; remove_if holds the shard lock, so no concurrent caller
@@ -993,6 +1024,36 @@ impl SessionRuntime {
         self.tool_host_call_locks
             .remove_if(thread_key.as_str(), |_, lock| Arc::strong_count(lock) == 1);
         result
+    }
+
+    /// Resolve the principal once and return both the tool lists from its
+    /// effective sandbox spec and the capabilities the ensuing call must use.
+    pub async fn resolve_tool_host_call_policy(
+        &self,
+        principal_id: &str,
+    ) -> Result<ToolHostCallPolicy, SessionRuntimeError> {
+        let principal_id = principal_id.trim();
+        if principal_id.is_empty() {
+            return Err(SessionRuntimeError::BadRequest(
+                "tool host principal_id is required".to_owned(),
+            ));
+        }
+        let thread_key = tool_host_thread_key(principal_id)?;
+        let harness = self
+            .sandbox_runtime
+            .warm_harness
+            .clone()
+            .unwrap_or(HarnessType::Codex);
+        let spec =
+            (self.sandbox_runtime.spec_factory)(&thread_key, "mcp-tool-catalog", &harness, None);
+        let capabilities = self
+            .resolve_sandbox_capabilities(Some(principal_id))
+            .await?;
+        Ok(ToolHostCallPolicy {
+            principal_id: principal_id.to_owned(),
+            tool_filter: tool_host_tool_filter_from_spec(spec, &capabilities),
+            sandbox_capabilities: capabilities,
+        })
     }
 
     fn tool_host_call_lock(&self, thread_key: &ThreadKey) -> Arc<Mutex<()>> {
@@ -1006,17 +1067,25 @@ impl SessionRuntime {
         &self,
         thread_key: &ThreadKey,
         input: ToolHostCallInput,
+        sandbox_capabilities: SessionSandboxCapabilities,
     ) -> Result<ToolHostCallOutput, SessionRuntimeError> {
         let ToolHostCallInput {
             principal_id,
+            console_user_email,
+            console_user_name,
             token_id,
             tool_name,
             method,
             arguments,
             timeout,
         } = input;
-        self.create_or_get_tool_host_session(thread_key, &principal_id)
-            .await?;
+        self.create_or_get_tool_host_session(
+            thread_key,
+            &principal_id,
+            console_user_email.as_deref(),
+            console_user_name.as_deref(),
+        )
+        .await?;
 
         let request_id = format!("mcp-call-{}", Uuid::new_v4().simple());
         let request = ToolHostRequest {
@@ -1033,7 +1102,7 @@ impl SessionRuntime {
         })?;
         let response_timeout = timeout.saturating_add(Duration::from_secs(5));
         let execution = self
-            .execute_session(
+            .execute_session_impl(
                 thread_key,
                 ExecuteSessionInput {
                     idempotency_key: Some(request_id.clone()),
@@ -1048,6 +1117,8 @@ impl SessionRuntime {
                     idle_timeout_ms: None,
                     max_duration_ms: Some(duration_millis_u64(response_timeout)),
                 },
+                None,
+                Some(sandbox_capabilities),
             )
             .await?;
         self.wait_for_tool_host_call(
@@ -1063,16 +1134,25 @@ impl SessionRuntime {
         &self,
         thread_key: &ThreadKey,
         principal_id: &str,
+        console_user_email: Option<&str>,
+        console_user_name: Option<&str>,
     ) -> Result<(), SessionRuntimeError> {
         let harness = self
             .sandbox_runtime
             .warm_harness
             .clone()
             .unwrap_or(HarnessType::Codex);
-        let metadata = tool_host_session_metadata(principal_id);
+        let metadata =
+            tool_host_session_metadata(principal_id, console_user_email, console_user_name);
         let session = self
             .store
-            .create_or_get_session(thread_key, &harness, None, metadata, BTreeMap::new())
+            .create_or_get_session_merging_metadata(
+                thread_key,
+                &harness,
+                None,
+                metadata,
+                BTreeMap::new(),
+            )
             .await?;
         if session.iron_control_principal.as_deref() != Some(principal_id) {
             self.store
@@ -1273,7 +1353,7 @@ impl SessionRuntime {
         // same principal cannot interleave with session setup.
         let call_lock = self.tool_host_call_lock(&thread_key);
         let _call_guard = call_lock.lock().await;
-        let metadata = tool_host_session_metadata(principal_id);
+        let metadata = tool_host_session_metadata(principal_id, None, None);
         let principal = self
             .iron_control
             .register_session(thread_key.as_str(), Some(&metadata))
@@ -1848,7 +1928,8 @@ impl SessionRuntime {
         thread_key: &ThreadKey,
         input: ExecuteSessionInput,
     ) -> Result<SessionExecution, SessionRuntimeError> {
-        self.execute_session_impl(thread_key, input, None).await
+        self.execute_session_impl(thread_key, input, None, None)
+            .await
     }
 
     async fn drive_session_execution(
@@ -1857,7 +1938,7 @@ impl SessionRuntime {
         execution_id: &str,
         input: ExecuteSessionInput,
     ) -> Result<SessionExecution, SessionRuntimeError> {
-        self.execute_session_impl(thread_key, input, Some(execution_id))
+        self.execute_session_impl(thread_key, input, Some(execution_id), None)
             .await
     }
 
@@ -1866,6 +1947,9 @@ impl SessionRuntime {
         thread_key: &ThreadKey,
         input: ExecuteSessionInput,
         persisted_execution_id: Option<&str>,
+        // Present only for an immediately dispatched tool-host call. Durable
+        // recovery passes None and resolves the principal's current policy.
+        pre_resolved_sandbox_capabilities: Option<SessionSandboxCapabilities>,
     ) -> Result<SessionExecution, SessionRuntimeError> {
         if self.shutting_down.load(Ordering::SeqCst) {
             return Err(SessionRuntimeError::ShuttingDown);
@@ -2030,9 +2114,13 @@ impl SessionRuntime {
             let requester_principal_id = self
                 .resolve_requester_principal(thread_key, requester_metadata.as_ref())
                 .await;
-            let desired_capabilities = self
-                .resolve_sandbox_capabilities(session.iron_control_principal.as_deref())
-                .await?;
+            let desired_capabilities = match pre_resolved_sandbox_capabilities {
+                Some(capabilities) => capabilities,
+                None => {
+                    self.resolve_sandbox_capabilities(session.iron_control_principal.as_deref())
+                        .await?
+                }
+            };
 
             let sandbox_id = match self
                 .ensure_session_sandbox(EnsureSessionSandboxRequest {
@@ -4051,7 +4139,7 @@ impl SandboxWorkloadMode {
         persona: Option<&PersonaContext>,
     ) -> SandboxSpec {
         match self {
-            Self::MockAppServer { image } => apply_persona_spec_env(
+            Self::MockAppServer { image } => apply_persona_spec(
                 SandboxSpec::new(image)
                     .command(["/bin/sh", "-lc"])
                     .args([mock_app_server_script()])
@@ -4084,7 +4172,7 @@ impl SandboxWorkloadMode {
                 for (name, value) in env {
                     spec = spec.env(name.clone(), value.clone());
                 }
-                apply_persona_spec_env(spec, persona)
+                apply_persona_spec(spec, persona)
             }
         }
     }
@@ -5568,6 +5656,25 @@ fn apply_sandbox_capabilities(spec: &mut SandboxSpec, capabilities: &SessionSand
     }
 }
 
+fn tool_host_tool_filter_from_spec(
+    mut spec: SandboxSpec,
+    capabilities: &SessionSandboxCapabilities,
+) -> ToolHostToolFilter {
+    apply_sandbox_capabilities(&mut spec, capabilities);
+    ToolHostToolFilter {
+        allowlist: spec
+            .env
+            .iter()
+            .find(|env| env.name == "TOOL_ALLOWLIST")
+            .map(|env| env.value.clone()),
+        blocklist: spec
+            .env
+            .iter()
+            .find(|env| env.name == "TOOL_BLOCKLIST")
+            .map(|env| env.value.clone()),
+    }
+}
+
 fn scope_repo_cache_mounts_to_public(spec: &mut SandboxSpec) {
     for mount in spec
         .mounts
@@ -5625,7 +5732,8 @@ fn append_spec_env_csv(spec: &mut SandboxSpec, name: &str, values: &str) {
     upsert_spec_env(spec, name, merged.join(","));
 }
 
-fn apply_persona_spec_env(mut spec: SandboxSpec, persona: Option<&PersonaContext>) -> SandboxSpec {
+fn apply_persona_spec(mut spec: SandboxSpec, persona: Option<&PersonaContext>) -> SandboxSpec {
+    let persona_prompt_path = format!("{SANDBOX_AGENT_HOME}/AGENTS_PERSONA.md");
     for name in [
         "AGENT_PERSONA",
         "CENTAUR_PERSONA_ID",
@@ -5635,11 +5743,17 @@ fn apply_persona_spec_env(mut spec: SandboxSpec, persona: Option<&PersonaContext
     ] {
         remove_spec_env(&mut spec, name);
     }
+    spec.files
+        .retain(|file| file.target_path != persona_prompt_path);
     let Some(persona) = persona else {
         return spec;
     };
     upsert_spec_env(&mut spec, "AGENT_PERSONA", persona.persona_id.clone());
     upsert_spec_env(&mut spec, "CENTAUR_PERSONA_ID", persona.persona_id.clone());
+    spec.files.push(SandboxFile::new(
+        persona_prompt_path,
+        persona.prompt.clone(),
+    ));
     upsert_spec_env(
         &mut spec,
         "CENTAUR_PERSONA_PROMPT_HASH",
@@ -6677,11 +6791,32 @@ fn tool_host_thread_key(principal_id: &str) -> Result<ThreadKey, SessionRuntimeE
 
 /// Session/principal metadata recorded for observability; runtime behavior
 /// derives from the `mcp:` thread-key prefix, not from these fields.
-fn tool_host_session_metadata(principal_id: &str) -> Value {
-    json!({
-        "mcp_tool_host": true,
-        "mcp_principal_id": principal_id,
-    })
+fn tool_host_session_metadata(
+    principal_id: &str,
+    console_user_email: Option<&str>,
+    console_user_name: Option<&str>,
+) -> Value {
+    let mut metadata = serde_json::Map::from_iter([
+        ("mcp_tool_host".to_owned(), Value::Bool(true)),
+        (
+            "mcp_principal_id".to_owned(),
+            Value::String(principal_id.to_owned()),
+        ),
+    ]);
+    insert_non_empty_metadata_string(&mut metadata, "console_user_email", console_user_email);
+    insert_non_empty_metadata_string(&mut metadata, "console_user_name", console_user_name);
+    Value::Object(metadata)
+}
+
+fn insert_non_empty_metadata_string(
+    metadata: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    metadata.insert(key.to_owned(), Value::String(value.to_owned()));
 }
 
 fn proxy_labels_from_session_metadata(
@@ -7030,6 +7165,26 @@ mod tests {
         assert_eq!(env_value(&spec, CENTAUR_PUBLIC_SKILL_DIRS_ENV), None);
     }
 
+    #[test]
+    fn tool_host_tool_filter_uses_effective_capability_scoped_spec() {
+        let spec = SandboxSpec::new("mock")
+            .env("TOOL_ALLOWLIST", "alpha,beta")
+            .env("TOOL_BLOCKLIST", "custom-script");
+        let capabilities = SessionSandboxCapabilities {
+            repo_cache: SessionRepoCacheAccess::None,
+            observability_enabled: false,
+        };
+
+        let filter = tool_host_tool_filter_from_spec(spec, &capabilities);
+
+        assert_eq!(filter.allowlist.as_deref(), Some("alpha,beta"));
+        let blocklist = filter.blocklist.unwrap();
+        assert!(blocklist.split(',').any(|tool| tool == "custom-script"));
+        for tool in OBSERVABILITY_TOOL_BLOCKLIST.split(',') {
+            assert!(blocklist.split(',').any(|blocked| blocked == tool));
+        }
+    }
+
     fn test_principal(
         labels: std::collections::BTreeMap<String, String>,
     ) -> centaur_iron_control::Principal {
@@ -7060,6 +7215,16 @@ mod tests {
 
         assert!(
             serde_json::to_value(registry.get("eng").unwrap())
+                .unwrap()
+                .get("prompt")
+                .is_none()
+        );
+        let context = registry
+            .context_for_access("eng", false, &SessionRepoCacheAccess::All)
+            .unwrap();
+        assert_eq!(context.prompt, "secret prompt");
+        assert!(
+            serde_json::to_value(context)
                 .unwrap()
                 .get("prompt")
                 .is_none()
@@ -7134,6 +7299,30 @@ mod tests {
         assert_eq!(spec.command, Some(vec!["/entrypoint.sh".to_owned()]));
         assert_eq!(spec.args, vec!["centaur-tool-host"]);
         assert_eq!(env_value(&spec, "TOOL_DIRS"), Some("/app/tools"));
+    }
+
+    #[test]
+    fn tool_host_session_metadata_includes_console_identity() {
+        assert_eq!(
+            tool_host_session_metadata("prn_test", Some(" test@example.com "), Some(" Test User "),),
+            json!({
+                "mcp_tool_host": true,
+                "mcp_principal_id": "prn_test",
+                "console_user_email": "test@example.com",
+                "console_user_name": "Test User",
+            })
+        );
+    }
+
+    #[test]
+    fn tool_host_session_metadata_omits_missing_console_identity() {
+        assert_eq!(
+            tool_host_session_metadata("prn_test", Some("  "), None),
+            json!({
+                "mcp_tool_host": true,
+                "mcp_principal_id": "prn_test",
+            })
+        );
     }
 
     #[test]
@@ -7806,20 +7995,25 @@ mod tests {
         );
         let thread_key = ThreadKey::parse("chat:C123:1780000000.000000").unwrap();
         let persona = test_persona_context("eng");
+        let expected_prompt_hash = persona.prompt_hash.clone();
 
         let spec = workload.spec(&thread_key, &HarnessType::Codex, Some(&persona));
 
         assert_eq!(env_value(&spec, "AGENT_PERSONA"), Some("eng"));
         assert_eq!(env_value(&spec, "CENTAUR_PERSONA_ID"), Some("eng"));
+        assert_eq!(spec.files.len(), 1);
+        assert_eq!(spec.files[0].target_path, "/home/agent/AGENTS_PERSONA.md");
+        assert_eq!(spec.files[0].contents, "eng persona prompt");
         assert_eq!(
             env_value(&spec, "CENTAUR_PERSONA_PROMPT_HASH"),
-            Some("sha256:prompt")
+            Some(expected_prompt_hash.as_str())
         );
         assert_eq!(
             env_value(&spec, "CENTAUR_PERSONA_SOURCE_REF"),
             Some("abc123")
         );
         assert_eq!(env_value(&workload.warm_spec(), "AGENT_PERSONA"), None);
+        assert!(workload.warm_spec().files.is_empty());
     }
 
     #[test]
@@ -8294,12 +8488,14 @@ mod tests {
     }
 
     fn test_persona_context(persona_id: &str) -> PersonaContext {
+        let prompt = format!("{persona_id} persona prompt");
         PersonaContext {
             persona_id: persona_id.to_owned(),
             source_root: "/repo/tools".to_owned(),
             source_path: format!("/repo/tools/personas/{persona_id}"),
             source_ref: Some("abc123".to_owned()),
-            prompt_hash: "sha256:prompt".to_owned(),
+            prompt_hash: format!("sha256:{}", hex::encode(Sha256::digest(prompt.as_bytes()))),
+            prompt,
             defaulted: false,
             overlay_chain: vec!["/repo/tools".to_owned()],
         }
