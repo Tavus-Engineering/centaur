@@ -1,10 +1,23 @@
 import base64
 import email.message
 import json
+import tomllib
+from pathlib import Path
 
 import pytest
 from slack.client import SlackAuthError, SlackClient, SlackRateLimitError
 from slack_sdk.errors import SlackApiError
+
+
+def test_search_token_manifest_covers_native_search_and_file_download_hosts() -> None:
+    manifest_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    manifest = tomllib.loads(manifest_path.read_text())
+    optional_secrets = manifest["tool"]["centaur"]["optional_secrets"]
+    search_token = next(
+        secret for secret in optional_secrets if secret["name"] == "SLACK_SEARCH_TOKEN"
+    )
+
+    assert search_token["hosts"] == ["slack.com", "files.slack.com"]
 
 
 class _FakeSlackResponse(dict):
