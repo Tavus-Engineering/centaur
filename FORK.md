@@ -27,3 +27,4 @@ line in the PR that syncs it back.
 | 376cb39e | upgrade Watch Agent to Centaur 2.0 with cross-thread recall, complete service deployment, signed API/file proxy repair, and durable Tavus tool grants | [#35](https://github.com/Tavus-Engineering/centaur/pull/35) |
 | 35cabfad | align Watch Agent with GPT-5.6 Sol high and verified brokered LogRocket/Coda/Braintrust/SigNoz/GitHub/Linear/Slack tool access | [#36](https://github.com/Tavus-Engineering/centaur/pull/36) |
 | 6c71e32f | slackbotv2: keep one reply inline, then continue directed follow-ups in a reusable investigations-channel thread | [#37](https://github.com/Tavus-Engineering/centaur/pull/37) |
+| 4dfa3bab | upgrade to Centaur 0.1.129, preserve Watch Agent runtime paths, and add bounded host cleanup | [#38](https://github.com/Tavus-Engineering/centaur/pull/38) |
