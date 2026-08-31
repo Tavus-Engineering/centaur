@@ -17,8 +17,23 @@ CENTAUR_CONSOLE_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console
 CENTAUR_CONSOLE_WORKER_DEPLOYMENT ?= $(CENTAUR_RELEASE)-centaur-console-worker
 CENTAUR_REPO_CACHE_DAEMONSET ?= $(CENTAUR_RELEASE)-centaur-repo-cache
 CENTAUR_REQUIRED_INFRA_TOOLS ?= slack linear company_context signoz tavus-api integration-tools
+CENTAUR_SUDO ?= sudo
 
-.PHONY: deploy
+.PHONY: deploy install-host-cleanup test-host-cleanup
+
+install-host-cleanup:
+	$(CENTAUR_SUDO) install -d -m 0755 /usr/local/libexec/centaur
+	$(CENTAUR_SUDO) install -m 0755 contrib/scripts/host-disk-cleanup.sh \
+		/usr/local/libexec/centaur/host-disk-cleanup
+	$(CENTAUR_SUDO) install -m 0644 contrib/systemd/centaur-host-cleanup.service \
+		/etc/systemd/system/centaur-host-cleanup.service
+	$(CENTAUR_SUDO) install -m 0644 contrib/systemd/centaur-host-cleanup.timer \
+		/etc/systemd/system/centaur-host-cleanup.timer
+	$(CENTAUR_SUDO) systemctl daemon-reload
+	$(CENTAUR_SUDO) systemctl enable --now centaur-host-cleanup.timer
+
+test-host-cleanup:
+	contrib/scripts/host-disk-cleanup.test.sh
 
 deploy:
 	set -euo pipefail; \

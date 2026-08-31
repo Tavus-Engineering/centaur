@@ -69,8 +69,9 @@ and `SLACKBOT_API_KEY` are API boot requirements in the current chart.
 `SLACK_BOT_TOKEN` is required by the default local bootstrap because Slackbot is
 enabled in `values.dev.yaml`; use a real token if you want to test Slack.
 
-`SLACKBOT_API_KEY` is a static service token. The API bootstraps that value into
-Postgres on startup, so it must exist before `just up`.
+`SLACKBOT_API_KEY` is Slackbot's dedicated static service token. Console uses
+the existing JWT signing secret to mint its own short-lived, purpose-bound
+service tokens for api-rs.
 
 Application-level model and tool secrets, such as `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, `AMP_API_KEY`, and `GITHUB_TOKEN`, should live in
@@ -176,7 +177,8 @@ bot event so the Slackbot can publish the Watch Agent Home view. For a minimal
 channel-mention test, the app also needs Bot Token Scopes that let it read
 mentions and write replies, for example `app_mentions:read` and `chat:write`. If
 you enable DM events such as `message.im`, Slack will also require
-direct-message scopes such as `im:history`.
+direct-message scopes such as `im:history`. Scheduled task delivery to a user's
+DM requires `im:write`.
 
 With message-event subscriptions enabled, replies still need to mention the bot.
 Unmentioned replies are collected as context for the next addressed turn.

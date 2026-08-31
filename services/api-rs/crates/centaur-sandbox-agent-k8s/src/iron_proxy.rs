@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
 use crate::{
-    API_SERVER_ENABLED_LABEL, AgentSandboxBackend, MANAGED_BY_LABEL, MANAGED_BY_VALUE,
-    OBSERVABILITY_ENABLED_LABEL, OtlpEgressTarget, SANDBOX_ID_LABEL, is_not_found, map_kube_error,
+    AgentSandboxBackend, MANAGED_BY_LABEL, MANAGED_BY_VALUE, OBSERVABILITY_ENABLED_LABEL,
+    OtlpEgressTarget, SANDBOX_ID_LABEL, is_not_found, map_kube_error,
 };
 
 const IRON_PROXY_LABEL: &str = "centaur.ai/iron-proxy";
@@ -133,6 +133,9 @@ pub(crate) struct ResolvedIronProxy {
     console_url: String,
     // iron-control principal OID this sandbox's proxy binds to.
     principal_id: String,
+    // Requesting user's principal OID bound to the proxy for the current turn,
+    // when the turn has one.
+    requester_principal_id: Option<String>,
     // Labels applied to the iron-control proxy row and used by proxy-specific
     // config rendering in the control plane.
     labels: BTreeMap<String, String>,
@@ -151,14 +154,12 @@ pub(crate) struct ResolvedIronProxy {
     // env, so it survives api-rs restarts and respects env overrides.
     management_api_key: String,
     observability_enabled: bool,
-    api_server_enabled: bool,
 }
 
 struct ResolvedIronProxyRuntime {
     pg: Option<ResolvedPg>,
     replace_placeholders: BTreeMap<String, String>,
     observability_enabled: bool,
-    api_server_enabled: bool,
 }
 
 /// The single Postgres listener the proxy multiplexes every upstream through.
@@ -217,12 +218,12 @@ impl AgentSandboxBackend {
         Ok(Some(self.resolved_iron_proxy_for_principal(
             id,
             principal_id,
+            spec.iron_control_requester_principal.clone(),
             labels,
             ResolvedIronProxyRuntime {
                 pg,
                 replace_placeholders,
                 observability_enabled: spec.capabilities.observability_enabled,
-                api_server_enabled: spec.capabilities.api_server_enabled,
             },
         )))
     }
@@ -283,15 +284,19 @@ impl AgentSandboxBackend {
             .get(id.as_str())
             .await
             .map_err(|err| map_kube_error("get sandbox for resume", err))?;
-        let principal_id = sandbox
-            .metadata
-            .annotations
-            .as_ref()
+        let annotations = sandbox.metadata.annotations.as_ref();
+        let principal_id = annotations
             .and_then(|annotations| annotations.get(crate::IRON_CONTROL_PRINCIPAL_ANNOTATION))
             .cloned();
         let Some(principal_id) = principal_id else {
             return Ok(None);
         };
+        // Carry the last turn's requester across the pause so the recreated
+        // proxy row does not silently drop it before the post-resume ensure
+        // call re-asserts the current turn's binding.
+        let requester_principal_id = annotations
+            .and_then(|annotations| annotations.get(crate::IRON_CONTROL_REQUESTER_ANNOTATION))
+            .cloned();
         let pg = self.resolved_pg_for_recreation(Some(&sandbox));
         let replace_placeholders = self.effective_replace_placeholders(&principal_id).await?;
         let observability_enabled = resolve_resume_capability(
@@ -301,22 +306,15 @@ impl AgentSandboxBackend {
             "observability",
             id.as_str(),
         );
-        let api_server_enabled = resolve_resume_capability(
-            sandbox_api_server_enabled(&sandbox, &self.config.container_name),
-            sandbox.metadata.labels.as_ref(),
-            API_SERVER_ENABLED_LABEL,
-            "api_server",
-            id.as_str(),
-        );
         Ok(Some(self.resolved_iron_proxy_for_principal(
             id,
             principal_id,
+            requester_principal_id,
             BTreeMap::new(),
             ResolvedIronProxyRuntime {
                 pg,
                 replace_placeholders,
                 observability_enabled,
-                api_server_enabled,
             },
         )))
     }
@@ -325,6 +323,7 @@ impl AgentSandboxBackend {
         &self,
         id: &SandboxId,
         principal_id: String,
+        requester_principal_id: Option<String>,
         labels: BTreeMap<String, String>,
         runtime: ResolvedIronProxyRuntime,
     ) -> ResolvedIronProxy {
@@ -334,12 +333,12 @@ impl AgentSandboxBackend {
             proxy_port: PROXY_TUNNEL_PORT,
             console_url: self.config.iron_control.control_url.clone(),
             principal_id,
+            requester_principal_id,
             labels,
             pg: runtime.pg,
             replace_placeholders: runtime.replace_placeholders,
             management_api_key: new_proxy_management_api_key(),
             observability_enabled: runtime.observability_enabled,
-            api_server_enabled: runtime.api_server_enabled,
         }
     }
 
@@ -386,9 +385,12 @@ impl AgentSandboxBackend {
                     iron_proxy,
                     resolved,
                     &sync,
-                    &self.config.node_selector,
-                    &self.config.tolerations,
-                    self.config.runtime_class_name.as_deref(),
+                    ProxyPodScheduling {
+                        node_selector: &self.config.node_selector,
+                        tolerations: &self.config.tolerations,
+                        runtime_class_name: self.config.runtime_class_name.as_deref(),
+                        priority_class_name: self.config.priority_class_name.as_deref(),
+                    },
                 ),
             )
             .await
@@ -414,7 +416,12 @@ impl AgentSandboxBackend {
         let iron_control = &self.config.iron_control;
         let proxy = iron_control
             .client
-            .create_proxy(id.as_str(), &resolved.principal_id, resolved.labels.clone())
+            .create_proxy(
+                id.as_str(),
+                &resolved.principal_id,
+                resolved.requester_principal_id.clone(),
+                resolved.labels.clone(),
+            )
             .await
             .map_err(|err| SandboxError::backend_source("iron-control create proxy", err))?;
         let token = proxy
@@ -526,6 +533,7 @@ impl AgentSandboxBackend {
         &self,
         id: &SandboxId,
         principal_id: &str,
+        requester_principal_id: Option<&str>,
         labels: &BTreeMap<String, String>,
     ) -> SandboxResult<()> {
         let iron_control = &self.config.iron_control;
@@ -537,8 +545,13 @@ impl AgentSandboxBackend {
                 "iron-proxy resources are missing or not running; recreating before assignment"
             );
             proxy_id = Some(
-                self.recreate_iron_proxy_resources_for_principal(id, principal_id, labels)
-                    .await?,
+                self.recreate_iron_proxy_resources_for_principal(
+                    id,
+                    principal_id,
+                    requester_principal_id,
+                    labels,
+                )
+                .await?,
             );
         }
         let proxy_id = proxy_id.ok_or_else(|| {
@@ -549,14 +562,14 @@ impl AgentSandboxBackend {
         })?;
         let proxy = iron_control
             .client
-            .assign_proxy_principal(&proxy_id, principal_id, labels)
+            .assign_proxy_principal(&proxy_id, principal_id, requester_principal_id, labels)
             .await
             .map_err(|err| SandboxError::backend_source("iron-control assign proxy", err))?;
         self.proxy_ids
             .lock()
             .await
             .insert(id.as_str().to_owned(), proxy.id);
-        self.patch_iron_control_principal_annotation(id, principal_id)
+        self.patch_iron_control_principal_annotation(id, principal_id, requester_principal_id)
             .await?;
         self.wait_for_proxy_principal_applied(id, principal_id, proxy.config_hash.as_deref())
             .await;
@@ -567,6 +580,7 @@ impl AgentSandboxBackend {
         &self,
         id: &SandboxId,
         principal_id: &str,
+        requester_principal_id: Option<&str>,
         labels: &BTreeMap<String, String>,
     ) -> SandboxResult<()> {
         if self.config.iron_proxy.is_none() {
@@ -581,21 +595,23 @@ impl AgentSandboxBackend {
                 .get(id.as_str())
                 .await
                 .map_err(|err| map_kube_error("get sandbox for proxy principal check", err))?;
-            let assigned_principal = sandbox
-                .metadata
-                .annotations
-                .as_ref()
-                .and_then(|annotations| annotations.get(crate::IRON_CONTROL_PRINCIPAL_ANNOTATION));
-            if assigned_principal.map(String::as_str) == Some(principal_id) && labels.is_empty() {
+            if proxy_binding_matches(
+                sandbox.metadata.annotations.as_ref(),
+                principal_id,
+                requester_principal_id,
+                labels,
+            ) {
                 return Ok(());
             }
 
             let iron_control = &self.config.iron_control;
             let proxy = iron_control
                 .client
-                .assign_proxy_principal(&proxy_id, principal_id, labels)
+                .assign_proxy_principal(&proxy_id, principal_id, requester_principal_id, labels)
                 .await
                 .map_err(|err| SandboxError::backend_source("iron-control assign proxy", err))?;
+            self.patch_iron_control_principal_annotation(id, principal_id, requester_principal_id)
+                .await?;
             self.wait_for_proxy_principal_applied(id, principal_id, proxy.config_hash.as_deref())
                 .await;
             return Ok(());
@@ -606,9 +622,14 @@ impl AgentSandboxBackend {
             principal_id,
             "iron-proxy resources are missing or not running; recreating before reuse"
         );
-        self.recreate_iron_proxy_resources_for_principal(id, principal_id, labels)
-            .await?;
-        self.patch_iron_control_principal_annotation(id, principal_id)
+        self.recreate_iron_proxy_resources_for_principal(
+            id,
+            principal_id,
+            requester_principal_id,
+            labels,
+        )
+        .await?;
+        self.patch_iron_control_principal_annotation(id, principal_id, requester_principal_id)
             .await?;
         Ok(())
     }
@@ -617,6 +638,7 @@ impl AgentSandboxBackend {
         &self,
         id: &SandboxId,
         principal_id: &str,
+        requester_principal_id: Option<&str>,
         labels: &BTreeMap<String, String>,
     ) -> SandboxResult<String> {
         if self.config.iron_proxy.is_none() {
@@ -651,33 +673,15 @@ impl AgentSandboxBackend {
                 );
                 false
             });
-        let api_server_enabled = sandbox
-            .as_ref()
-            .map(|sandbox| {
-                resolve_resume_capability(
-                    sandbox_api_server_enabled(sandbox, &self.config.container_name),
-                    sandbox.metadata.labels.as_ref(),
-                    API_SERVER_ENABLED_LABEL,
-                    "api_server",
-                    id.as_str(),
-                )
-            })
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    sandbox_id = id.as_str(),
-                    "sandbox CR missing during proxy repair; failing closed for API server network policy"
-                );
-                false
-            });
         let resolved = self.resolved_iron_proxy_for_principal(
             id,
             principal_id,
+            requester_principal_id.map(ToOwned::to_owned),
             labels.clone(),
             ResolvedIronProxyRuntime {
                 pg,
                 replace_placeholders,
                 observability_enabled,
-                api_server_enabled,
             },
         );
         self.create_iron_proxy_resources(id, Some(&resolved))
@@ -958,11 +962,16 @@ impl AgentSandboxBackend {
         &self,
         id: &SandboxId,
         principal_id: &str,
+        requester_principal_id: Option<&str>,
     ) -> SandboxResult<()> {
+        // A merge-patch null removes the requester annotation, so "no
+        // requester" and "absent annotation" stay indistinguishable for the
+        // binding comparison.
         let patch = Patch::Merge(json!({
             "metadata": {
                 "annotations": {
                     crate::IRON_CONTROL_PRINCIPAL_ANNOTATION: principal_id,
+                    crate::IRON_CONTROL_REQUESTER_ANNOTATION: requester_principal_id,
                 },
             },
         }));
@@ -1219,14 +1228,21 @@ pub(crate) fn sandbox_ca_volume_json(iron_proxy: &IronProxyConfig) -> Value {
     })
 }
 
+/// Pod-scheduling knobs copied from [`AgentSandboxConfig`] onto each proxy
+/// pod so it lands under the same constraints as its sandbox.
+struct ProxyPodScheduling<'a> {
+    node_selector: &'a BTreeMap<String, String>,
+    tolerations: &'a [k8s_openapi::api::core::v1::Toleration],
+    runtime_class_name: Option<&'a str>,
+    priority_class_name: Option<&'a str>,
+}
+
 fn build_iron_proxy_pod(
     id: &SandboxId,
     iron_proxy: &IronProxyConfig,
     resolved: &ResolvedIronProxy,
     sync: &ProxySyncEnv,
-    node_selector: &BTreeMap<String, String>,
-    tolerations: &[k8s_openapi::api::core::v1::Toleration],
-    runtime_class_name: Option<&str>,
+    scheduling: ProxyPodScheduling<'_>,
 ) -> Pod {
     let annotations = BTreeMap::from([
         (
@@ -1238,18 +1254,20 @@ fn build_iron_proxy_pod(
             resolved.principal_id.clone(),
         ),
     ]);
-    let runtime_class = runtime_class_name
+    let runtime_class = scheduling
+        .runtime_class_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned);
+    let priority_class = scheduling
+        .priority_class_name
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map(str::to_owned);
     Pod {
         metadata: object_meta_with_annotations(
             resolved.proxy_pod_name.clone(),
-            iron_proxy_labels(
-                id,
-                resolved.observability_enabled,
-                resolved.api_server_enabled,
-            ),
+            iron_proxy_labels(id, resolved.observability_enabled),
             annotations,
         ),
         spec: Some(PodSpec {
@@ -1260,9 +1278,12 @@ fn build_iron_proxy_pod(
             // Co-locate the per-sandbox proxy with its sandbox: it scales 1:1
             // with sandboxes and processes untrusted traffic, so it must share
             // the same node pool / RuntimeClass (e.g. gVisor) constraints.
-            node_selector: (!node_selector.is_empty()).then(|| node_selector.clone()),
-            tolerations: (!tolerations.is_empty()).then(|| tolerations.to_vec()),
+            node_selector: (!scheduling.node_selector.is_empty())
+                .then(|| scheduling.node_selector.clone()),
+            tolerations: (!scheduling.tolerations.is_empty())
+                .then(|| scheduling.tolerations.to_vec()),
             runtime_class_name: runtime_class,
+            priority_class_name: priority_class,
             ..Default::default()
         }),
         ..Default::default()
@@ -1456,18 +1477,10 @@ fn build_iron_proxy_service(id: &SandboxId, resolved: &ResolvedIronProxy) -> Ser
     Service {
         metadata: object_meta(
             iron_proxy_service_name(id),
-            iron_proxy_labels(
-                id,
-                resolved.observability_enabled,
-                resolved.api_server_enabled,
-            ),
+            iron_proxy_labels(id, resolved.observability_enabled),
         ),
         spec: Some(ServiceSpec {
-            selector: Some(iron_proxy_labels(
-                id,
-                resolved.observability_enabled,
-                resolved.api_server_enabled,
-            )),
+            selector: Some(iron_proxy_labels(id, resolved.observability_enabled)),
             ports: Some(ports),
             ..Default::default()
         }),
@@ -1486,11 +1499,7 @@ fn build_iron_proxy_network_policies(
     let sandbox_to_proxy_ports = sandbox_to_proxy_ports(resolved);
     let sandbox_egress = vec![
         egress_to(
-            vec![pod_peer(iron_proxy_labels(
-                id,
-                observability_enabled,
-                resolved.api_server_enabled,
-            ))],
+            vec![pod_peer(iron_proxy_labels(id, observability_enabled))],
             sandbox_to_proxy_ports.clone(),
         ),
         dns_egress_rule(),
@@ -1511,14 +1520,10 @@ fn build_iron_proxy_network_policies(
         NetworkPolicy {
             metadata: object_meta(
                 iron_proxy_policy_name(id),
-                iron_proxy_labels(id, observability_enabled, resolved.api_server_enabled),
+                iron_proxy_labels(id, observability_enabled),
             ),
             spec: Some(NetworkPolicySpec {
-                pod_selector: Some(label_selector(iron_proxy_labels(
-                    id,
-                    observability_enabled,
-                    resolved.api_server_enabled,
-                ))),
+                pod_selector: Some(label_selector(iron_proxy_labels(id, observability_enabled))),
                 policy_types: Some(vec!["Ingress".to_owned(), "Egress".to_owned()]),
                 ingress: Some(vec![
                     NetworkPolicyIngressRule {
@@ -1537,7 +1542,6 @@ fn build_iron_proxy_network_policies(
                     control_target,
                     otlp_egress,
                     observability_enabled,
-                    resolved.api_server_enabled,
                 )),
             }),
         },
@@ -1555,7 +1559,6 @@ fn proxy_egress_rules(
     control_target: &ControlPlaneEgressTarget,
     otlp_egress: Option<&OtlpEgressTarget>,
     observability_enabled: bool,
-    api_server_enabled: bool,
 ) -> Vec<NetworkPolicyEgressRule> {
     // Upstream egress: 443/5432 for normal traffic, plus the iron-control port
     // (deduped) so a sync-mode proxy can reach the control plane. Public
@@ -1572,19 +1575,18 @@ fn proxy_egress_rules(
         vec![network_port(PG_LISTENER_PORT)],
     ));
     rules.push(egress_to(vec![public_ipv4_peer()], upstream_ports));
-    if api_server_enabled {
+    // Every sandbox reaches api-rs through its proxy. Route-level access is
+    // enforced by the principal JWT's explicit capability claims, so network
+    // reachability must not remain coupled to observability.
+    rules.push(egress_to(
+        vec![pod_peer(iron_proxy.api_pod_labels.clone())],
+        vec![network_port(8000), network_port(8080)],
+    ));
+    if observability_enabled && let Some(target) = otlp_egress {
         rules.push(egress_to(
-            vec![pod_peer(iron_proxy.api_pod_labels.clone())],
-            vec![network_port(8000), network_port(8080)],
+            vec![namespace_peer(&target.namespace)],
+            vec![network_port(target.port)],
         ));
-    }
-    if observability_enabled {
-        if let Some(target) = otlp_egress {
-            rules.push(egress_to(
-                vec![namespace_peer(&target.namespace)],
-                vec![network_port(target.port)],
-            ));
-        }
     }
     if matches!(
         iron_proxy.source_policy.kind,
@@ -1781,18 +1783,6 @@ pub(crate) fn sandbox_observability_enabled(
     sandbox_env_value(
         sandbox,
         "CENTAUR_SANDBOX_OBSERVABILITY_ENABLED",
-        container_name,
-    )
-    .and_then(|value| value.parse().ok())
-}
-
-pub(crate) fn sandbox_api_server_enabled(
-    sandbox: &crate::crd::Sandbox,
-    container_name: &str,
-) -> Option<bool> {
-    sandbox_env_value(
-        sandbox,
-        "CENTAUR_SANDBOX_API_SERVER_ENABLED",
         container_name,
     )
     .and_then(|value| value.parse().ok())
@@ -2090,11 +2080,7 @@ fn sandbox_labels(id: &SandboxId) -> BTreeMap<String, String> {
     ])
 }
 
-fn iron_proxy_labels(
-    id: &SandboxId,
-    observability_enabled: bool,
-    api_server_enabled: bool,
-) -> BTreeMap<String, String> {
+fn iron_proxy_labels(id: &SandboxId, observability_enabled: bool) -> BTreeMap<String, String> {
     let mut labels = BTreeMap::from([
         (MANAGED_BY_LABEL.to_owned(), MANAGED_BY_VALUE.to_owned()),
         (SANDBOX_ID_LABEL.to_owned(), id.as_str().to_owned()),
@@ -2103,10 +2089,27 @@ fn iron_proxy_labels(
     if observability_enabled {
         labels.insert(OBSERVABILITY_ENABLED_LABEL.to_owned(), "true".to_owned());
     }
-    if api_server_enabled {
-        labels.insert(API_SERVER_ENABLED_LABEL.to_owned(), "true".to_owned());
-    }
     labels
+}
+
+/// Whether a sandbox's annotations already record the requested proxy binding,
+/// so the ensure path can skip a redundant reassignment. An absent requester
+/// annotation means "no requester" and compares equal to `None`, keeping
+/// label-less sessions (tool-host, non-Slack) on the skip path. Any label
+/// refresh always reassigns, mirroring the pre-requester behavior.
+fn proxy_binding_matches(
+    annotations: Option<&BTreeMap<String, String>>,
+    principal_id: &str,
+    requester_principal_id: Option<&str>,
+    labels: &BTreeMap<String, String>,
+) -> bool {
+    let assigned_principal = annotations
+        .and_then(|annotations| annotations.get(crate::IRON_CONTROL_PRINCIPAL_ANNOTATION));
+    let assigned_requester = annotations
+        .and_then(|annotations| annotations.get(crate::IRON_CONTROL_REQUESTER_ANNOTATION));
+    assigned_principal.map(String::as_str) == Some(principal_id)
+        && assigned_requester.map(String::as_str) == requester_principal_id
+        && labels.is_empty()
 }
 
 fn unique_suffix() -> String {
@@ -2121,6 +2124,16 @@ fn unique_suffix() -> String {
 mod tests {
     use super::*;
 
+    fn no_scheduling() -> ProxyPodScheduling<'static> {
+        static EMPTY_SELECTOR: BTreeMap<String, String> = BTreeMap::new();
+        ProxyPodScheduling {
+            node_selector: &EMPTY_SELECTOR,
+            tolerations: &[],
+            runtime_class_name: None,
+            priority_class_name: None,
+        }
+    }
+
     fn resolved() -> ResolvedIronProxy {
         ResolvedIronProxy {
             proxy_host: "asbx-test-iron-proxy".to_owned(),
@@ -2128,24 +2141,98 @@ mod tests {
             proxy_port: 8080,
             console_url: "http://console:3000".to_owned(),
             principal_id: "principal".to_owned(),
+            requester_principal_id: None,
             labels: BTreeMap::new(),
             pg: None,
             replace_placeholders: BTreeMap::new(),
             management_api_key: "test-management-key".to_owned(),
             observability_enabled: true,
-            api_server_enabled: true,
         }
     }
 
-    fn resolved_with_capabilities(
-        observability_enabled: bool,
-        api_server_enabled: bool,
-    ) -> ResolvedIronProxy {
+    fn resolved_with_observability(observability_enabled: bool) -> ResolvedIronProxy {
         ResolvedIronProxy {
             observability_enabled,
-            api_server_enabled,
             ..resolved()
         }
+    }
+
+    fn binding_annotations(
+        principal: Option<&str>,
+        requester: Option<&str>,
+    ) -> BTreeMap<String, String> {
+        let mut annotations = BTreeMap::new();
+        if let Some(principal) = principal {
+            annotations.insert(
+                crate::IRON_CONTROL_PRINCIPAL_ANNOTATION.to_owned(),
+                principal.to_owned(),
+            );
+        }
+        if let Some(requester) = requester {
+            annotations.insert(
+                crate::IRON_CONTROL_REQUESTER_ANNOTATION.to_owned(),
+                requester.to_owned(),
+            );
+        }
+        annotations
+    }
+
+    #[test]
+    fn proxy_binding_matches_compares_principal_requester_and_labels() {
+        let no_labels = BTreeMap::new();
+        let labels = BTreeMap::from([("centaur.slack_channel_id".to_owned(), "C1".to_owned())]);
+
+        let both = binding_annotations(Some("prn_conv"), Some("prn_req"));
+        assert!(proxy_binding_matches(
+            Some(&both),
+            "prn_conv",
+            Some("prn_req"),
+            &no_labels
+        ));
+
+        let no_requester = binding_annotations(Some("prn_conv"), None);
+        assert!(proxy_binding_matches(
+            Some(&no_requester),
+            "prn_conv",
+            None,
+            &no_labels
+        ));
+
+        // A requester swap, a requester-to-none clear, and a none-to-requester
+        // bind must all fall through to reassignment.
+        assert!(!proxy_binding_matches(
+            Some(&both),
+            "prn_conv",
+            Some("prn_other"),
+            &no_labels
+        ));
+        assert!(!proxy_binding_matches(
+            Some(&both),
+            "prn_conv",
+            None,
+            &no_labels
+        ));
+        assert!(!proxy_binding_matches(
+            Some(&no_requester),
+            "prn_conv",
+            Some("prn_req"),
+            &no_labels
+        ));
+
+        // Principal mismatch and non-empty labels always reassign.
+        assert!(!proxy_binding_matches(
+            Some(&both),
+            "prn_else",
+            Some("prn_req"),
+            &no_labels
+        ));
+        assert!(!proxy_binding_matches(
+            Some(&both),
+            "prn_conv",
+            Some("prn_req"),
+            &labels
+        ));
+        assert!(!proxy_binding_matches(None, "prn_conv", None, &no_labels));
     }
 
     fn control_target() -> ControlPlaneEgressTarget {
@@ -2250,24 +2337,17 @@ mod tests {
     }
 
     #[test]
-    fn iron_proxy_labels_capabilities_when_enabled() {
+    fn iron_proxy_labels_observability_when_enabled() {
         let id = SandboxId::new("asbx-test");
 
         assert_eq!(
-            iron_proxy_labels(&id, true, true)
+            iron_proxy_labels(&id, true)
                 .get(OBSERVABILITY_ENABLED_LABEL)
                 .map(String::as_str),
             Some("true")
         );
-        assert_eq!(
-            iron_proxy_labels(&id, true, true)
-                .get(API_SERVER_ENABLED_LABEL)
-                .map(String::as_str),
-            Some("true")
-        );
-        let restricted_labels = iron_proxy_labels(&id, false, false);
+        let restricted_labels = iron_proxy_labels(&id, false);
         assert!(!restricted_labels.contains_key(OBSERVABILITY_ENABLED_LABEL));
-        assert!(!restricted_labels.contains_key(API_SERVER_ENABLED_LABEL));
     }
 
     #[test]
@@ -2289,15 +2369,7 @@ mod tests {
             config_hash: None,
         };
 
-        let pod = build_iron_proxy_pod(
-            &id,
-            &iron_proxy,
-            &resolved(),
-            &sync,
-            &BTreeMap::new(),
-            &[],
-            None,
-        );
+        let pod = build_iron_proxy_pod(&id, &iron_proxy, &resolved(), &sync, no_scheduling());
 
         let resources = pod.spec.as_ref().unwrap().containers[0]
             .resources
@@ -2330,15 +2402,7 @@ mod tests {
             config_hash: None,
         };
 
-        let pod = build_iron_proxy_pod(
-            &id,
-            &iron_proxy,
-            &resolved(),
-            &sync,
-            &BTreeMap::new(),
-            &[],
-            None,
-        );
+        let pod = build_iron_proxy_pod(&id, &iron_proxy, &resolved(), &sync, no_scheduling());
 
         assert!(pod.spec.as_ref().unwrap().containers[0].resources.is_none());
     }
@@ -2355,28 +2419,12 @@ mod tests {
             config_hash: None,
         };
 
-        let pod = build_iron_proxy_pod(
-            &id,
-            &iron_proxy,
-            &resolved,
-            &sync,
-            &BTreeMap::new(),
-            &[],
-            None,
-        );
+        let pod = build_iron_proxy_pod(&id, &iron_proxy, &resolved, &sync, no_scheduling());
         assert_eq!(
             pod.metadata
                 .labels
                 .as_ref()
                 .and_then(|labels| labels.get(OBSERVABILITY_ENABLED_LABEL))
-                .map(String::as_str),
-            Some("true")
-        );
-        assert_eq!(
-            pod.metadata
-                .labels
-                .as_ref()
-                .and_then(|labels| labels.get(API_SERVER_ENABLED_LABEL))
                 .map(String::as_str),
             Some("true")
         );
@@ -2393,28 +2441,10 @@ mod tests {
         );
         assert_eq!(
             service
-                .metadata
-                .labels
-                .as_ref()
-                .and_then(|labels| labels.get(API_SERVER_ENABLED_LABEL))
-                .map(String::as_str),
-            Some("true")
-        );
-        assert_eq!(
-            service
                 .spec
                 .as_ref()
                 .and_then(|spec| spec.selector.as_ref())
                 .and_then(|selector| selector.get(OBSERVABILITY_ENABLED_LABEL))
-                .map(String::as_str),
-            Some("true")
-        );
-        assert_eq!(
-            service
-                .spec
-                .as_ref()
-                .and_then(|spec| spec.selector.as_ref())
-                .and_then(|selector| selector.get(API_SERVER_ENABLED_LABEL))
                 .map(String::as_str),
             Some("true")
         );
@@ -2439,15 +2469,6 @@ mod tests {
         );
         assert_eq!(
             proxy_policy
-                .metadata
-                .labels
-                .as_ref()
-                .and_then(|labels| labels.get(API_SERVER_ENABLED_LABEL))
-                .map(String::as_str),
-            Some("true")
-        );
-        assert_eq!(
-            proxy_policy
                 .spec
                 .as_ref()
                 .and_then(|spec| spec.pod_selector.as_ref())
@@ -2456,23 +2477,13 @@ mod tests {
                 .map(String::as_str),
             Some("true")
         );
-        assert_eq!(
-            proxy_policy
-                .spec
-                .as_ref()
-                .and_then(|spec| spec.pod_selector.as_ref())
-                .and_then(|selector| selector.match_labels.as_ref())
-                .and_then(|labels| labels.get(API_SERVER_ENABLED_LABEL))
-                .map(String::as_str),
-            Some("true")
-        );
     }
 
     #[test]
-    fn iron_proxy_resources_omit_capability_labels_when_disabled() {
+    fn iron_proxy_resources_omit_observability_label_when_disabled() {
         let id = SandboxId::new("asbx-test");
         let iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
-        let resolved = resolved_with_capabilities(false, false);
+        let resolved = resolved_with_observability(false);
         let sync = ProxySyncEnv {
             proxy_id: "iprx_test".to_owned(),
             control_url: "http://console:3000".to_owned(),
@@ -2480,26 +2491,15 @@ mod tests {
             config_hash: None,
         };
 
-        let pod = build_iron_proxy_pod(
-            &id,
-            &iron_proxy,
-            &resolved,
-            &sync,
-            &BTreeMap::new(),
-            &[],
-            None,
-        );
+        let pod = build_iron_proxy_pod(&id, &iron_proxy, &resolved, &sync, no_scheduling());
         let pod_labels = pod.metadata.labels.as_ref().unwrap();
         assert!(!pod_labels.contains_key(OBSERVABILITY_ENABLED_LABEL));
-        assert!(!pod_labels.contains_key(API_SERVER_ENABLED_LABEL));
 
         let service = build_iron_proxy_service(&id, &resolved);
         let service_labels = service.metadata.labels.as_ref().unwrap();
         assert!(!service_labels.contains_key(OBSERVABILITY_ENABLED_LABEL));
-        assert!(!service_labels.contains_key(API_SERVER_ENABLED_LABEL));
         let service_selector = service.spec.as_ref().unwrap().selector.as_ref().unwrap();
         assert!(!service_selector.contains_key(OBSERVABILITY_ENABLED_LABEL));
-        assert!(!service_selector.contains_key(API_SERVER_ENABLED_LABEL));
 
         let policies = build_iron_proxy_network_policies(
             &id,
@@ -2512,7 +2512,6 @@ mod tests {
         let proxy_policy = &policies[1];
         let policy_labels = proxy_policy.metadata.labels.as_ref().unwrap();
         assert!(!policy_labels.contains_key(OBSERVABILITY_ENABLED_LABEL));
-        assert!(!policy_labels.contains_key(API_SERVER_ENABLED_LABEL));
         let policy_selector = proxy_policy
             .spec
             .as_ref()
@@ -2524,7 +2523,6 @@ mod tests {
             .as_ref()
             .unwrap();
         assert!(!policy_selector.contains_key(OBSERVABILITY_ENABLED_LABEL));
-        assert!(!policy_selector.contains_key(API_SERVER_ENABLED_LABEL));
     }
 
     #[test]
@@ -2553,9 +2551,12 @@ mod tests {
             &iron_proxy,
             &resolved,
             &sync,
-            &node_selector,
-            &tolerations,
-            Some("gvisor"),
+            ProxyPodScheduling {
+                node_selector: &node_selector,
+                tolerations: &tolerations,
+                runtime_class_name: Some("gvisor"),
+                priority_class_name: Some("centaur-sandbox"),
+            },
         );
         let pod_spec = pod.spec.unwrap();
         assert_eq!(
@@ -2568,6 +2569,10 @@ mod tests {
         );
         assert_eq!(pod_spec.tolerations.as_ref().unwrap().len(), 1);
         assert_eq!(pod_spec.runtime_class_name.as_deref(), Some("gvisor"));
+        assert_eq!(
+            pod_spec.priority_class_name.as_deref(),
+            Some("centaur-sandbox")
+        );
     }
 
     #[test]
@@ -2581,15 +2586,7 @@ mod tests {
             token: "proxy-token".to_owned(),
             config_hash: None,
         };
-        let pod = build_iron_proxy_pod(
-            &id,
-            &iron_proxy,
-            &resolved,
-            &sync,
-            &BTreeMap::new(),
-            &[],
-            None,
-        );
+        let pod = build_iron_proxy_pod(&id, &iron_proxy, &resolved, &sync, no_scheduling());
         let pod_spec = pod.spec.unwrap();
         assert!(pod_spec.node_selector.is_none());
         assert!(pod_spec.tolerations.is_none());
@@ -2600,7 +2597,6 @@ mod tests {
     fn resume_capability_prefers_valid_env_and_fails_closed_without_it() {
         let mut labels = BTreeMap::new();
         labels.insert(OBSERVABILITY_ENABLED_LABEL.to_owned(), "true".to_owned());
-        labels.insert(API_SERVER_ENABLED_LABEL.to_owned(), "true".to_owned());
 
         assert!(resolve_resume_capability(
             Some(true),
@@ -2630,27 +2626,6 @@ mod tests {
             "observability",
             "asbx-test",
         ));
-        assert!(!resolve_resume_capability(
-            None,
-            None,
-            API_SERVER_ENABLED_LABEL,
-            "api_server",
-            "asbx-test",
-        ));
-        assert!(!resolve_resume_capability(
-            Some(false),
-            None,
-            API_SERVER_ENABLED_LABEL,
-            "api_server",
-            "asbx-test",
-        ));
-        assert!(resolve_resume_capability(
-            Some(true),
-            None,
-            API_SERVER_ENABLED_LABEL,
-            "api_server",
-            "asbx-test",
-        ));
     }
 
     #[test]
@@ -2663,7 +2638,7 @@ mod tests {
             port: 8000,
         };
 
-        let resolved = resolved_with_capabilities(true, false);
+        let resolved = resolved_with_observability(true);
         let policies = build_iron_proxy_network_policies(
             &id,
             &resolved,
@@ -2726,7 +2701,7 @@ mod tests {
             port: 8000,
         };
 
-        let resolved = resolved_with_capabilities(false, false);
+        let resolved = resolved_with_observability(false);
         let policies = build_iron_proxy_network_policies(
             &id,
             &resolved,
@@ -2757,7 +2732,7 @@ mod tests {
                 .iter()
                 .any(|rule| rule_allows_namespace_port(rule, "laminar", 8000))
         );
-        assert!(!proxy_egress.iter().any(|rule| {
+        assert!(proxy_egress.iter().any(|rule| {
             rule.to.as_ref().is_some_and(|peers| {
                 peers.iter().any(|peer| {
                     peer.pod_selector.as_ref().is_some_and(|selector| {
@@ -2798,11 +2773,11 @@ mod tests {
     }
 
     #[test]
-    fn api_capability_allows_api_egress_without_observability() {
+    fn api_egress_does_not_require_observability() {
         let id = SandboxId::new("asbx-test");
         let iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
         let control_target = control_target();
-        let resolved = resolved_with_capabilities(false, true);
+        let resolved = resolved_with_observability(false);
 
         let policies = build_iron_proxy_network_policies(
             &id,

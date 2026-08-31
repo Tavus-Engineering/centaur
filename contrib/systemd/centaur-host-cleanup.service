@@ -1,0 +1,15 @@
+[Unit]
+Description=Prune stale Centaur host container artifacts
+Documentation=https://github.com/paradigmxyz/centaur
+After=docker.service k3s.service
+
+[Service]
+Type=oneshot
+Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+EnvironmentFile=-/etc/default/centaur-host-cleanup
+ExecStart=/usr/bin/flock --nonblock /run/lock/centaur-host-cleanup.lock /usr/local/libexec/centaur/host-disk-cleanup
+TimeoutStartSec=30m
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true

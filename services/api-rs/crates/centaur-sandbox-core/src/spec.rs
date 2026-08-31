@@ -30,7 +30,6 @@ pub struct SandboxCapabilities {
     #[serde(default)]
     pub repo_cache: RepoCacheAccess,
     pub observability_enabled: bool,
-    pub api_server_enabled: bool,
 }
 
 impl SandboxCapabilities {
@@ -38,12 +37,11 @@ impl SandboxCapabilities {
         Self {
             repo_cache: RepoCacheAccess::All,
             observability_enabled: true,
-            api_server_enabled: true,
         }
     }
 
     pub fn is_default_enabled(&self) -> bool {
-        self.repo_cache.enabled() && self.observability_enabled && self.api_server_enabled
+        self.repo_cache.enabled() && self.observability_enabled
     }
 }
 
@@ -61,6 +59,10 @@ pub struct SandboxSpec {
     pub command: Option<Vec<String>>,
     pub args: Vec<String>,
     pub env: Vec<EnvVar>,
+    /// Files materialized in the sandbox before the workload starts.
+    /// Target paths are absolute paths inside the sandbox.
+    #[serde(default)]
+    pub files: Vec<SandboxFile>,
     pub working_dir: Option<String>,
     pub mounts: Vec<Mount>,
     pub resources: Option<ResourceRequirements>,
@@ -69,6 +71,11 @@ pub struct SandboxSpec {
     /// proxy for the sandbox instead of rendering a static proxy config.
     #[serde(default)]
     pub iron_control_principal: Option<String>,
+    /// iron-control principal OID of the human requesting the turn that
+    /// creates this sandbox, bound to the proxy alongside
+    /// [`Self::iron_control_principal`].
+    #[serde(default)]
+    pub iron_control_requester_principal: Option<String>,
     /// Labels applied to the iron-control proxy registered for this sandbox.
     /// These are distinct from Kubernetes labels and are used by iron-control
     /// when rendering proxy-specific config.
@@ -86,10 +93,12 @@ impl SandboxSpec {
             command: None,
             args: Vec::new(),
             env: Vec::new(),
+            files: Vec::new(),
             working_dir: None,
             mounts: Vec::new(),
             resources: None,
             iron_control_principal: None,
+            iron_control_requester_principal: None,
             iron_control_proxy_labels: std::collections::BTreeMap::new(),
             capabilities: SandboxCapabilities::default_enabled(),
         }
@@ -125,6 +134,11 @@ impl SandboxSpec {
         self
     }
 
+    pub fn file(mut self, target_path: impl Into<String>, contents: impl Into<String>) -> Self {
+        self.files.push(SandboxFile::new(target_path, contents));
+        self
+    }
+
     pub fn working_dir(mut self, working_dir: impl Into<String>) -> Self {
         self.working_dir = Some(working_dir.into());
         self
@@ -138,6 +152,22 @@ impl SandboxSpec {
     pub fn resources(mut self, resources: ResourceRequirements) -> Self {
         self.resources = Some(resources);
         self
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SandboxFile {
+    /// Absolute destination path inside the sandbox.
+    pub target_path: String,
+    pub contents: String,
+}
+
+impl SandboxFile {
+    pub fn new(target_path: impl Into<String>, contents: impl Into<String>) -> Self {
+        Self {
+            target_path: target_path.into(),
+            contents: contents.into(),
+        }
     }
 }
 

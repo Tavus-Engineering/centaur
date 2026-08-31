@@ -26,6 +26,7 @@ export class NanocodexRendererEventMapper
   implements RendererSourceMapper<RustSessionStreamEvent | unknown>
 {
   private answer = ''
+  private readonly commentaryByItemId = new Map<string, string>()
   private error = ''
   private requestId = ''
   private done = false
@@ -48,14 +49,18 @@ export class NanocodexRendererEventMapper
         if (stringField(event.payload, 'phase') === 'commentary') {
           const text = stringField(event.payload, 'text')
           if (!text) return []
+          const itemId = stringField(event.payload, 'item_id') || `commentary-${event.seq}`
+          this.commentaryByItemId.set(itemId, text)
           return [
             {
               type: 'renderer.task.update',
               task: {
-                id: stringField(event.payload, 'item_id') || `commentary-${event.seq}`,
+                id: 'nanocodex-thinking',
                 title: 'Thinking',
                 status: 'complete',
-                details: [{ type: 'text', text }]
+                details: [
+                  { type: 'text', text: [...this.commentaryByItemId.values()].join('\n\n') }
+                ]
               }
             }
           ]

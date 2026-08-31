@@ -37,7 +37,7 @@ describe('NanocodexRendererEventMapper', () => {
     ])
   })
 
-  test('renders completed commentary as progress before streaming the final answer', () => {
+  test('consolidates completed commentary into one progress task', () => {
     const mapper = new NanocodexRendererEventMapper()
     expect(
       mapper.process(
@@ -60,10 +60,33 @@ describe('NanocodexRendererEventMapper', () => {
       {
         type: 'renderer.task.update',
         task: {
-          id: 'commentary-1',
+          id: 'nanocodex-thinking',
           title: 'Thinking',
           status: 'complete',
           details: [{ type: 'text', text: 'I’ll verify.' }]
+        }
+      }
+    ])
+    expect(
+      mapper.process(
+        native(
+          'assistant.message',
+          {
+            item_id: 'commentary-2',
+            phase: 'commentary',
+            text: 'I found the relevant events.'
+          },
+          3
+        )
+      )
+    ).toEqual([
+      {
+        type: 'renderer.task.update',
+        task: {
+          id: 'nanocodex-thinking',
+          title: 'Thinking',
+          status: 'complete',
+          details: [{ type: 'text', text: 'I’ll verify.\n\nI found the relevant events.' }]
         }
       }
     ])
@@ -73,7 +96,7 @@ describe('NanocodexRendererEventMapper', () => {
           item_id: 'answer-1',
           phase: 'final_answer',
           text: 'Done.'
-        }, 3)
+        }, 4)
       )
     ).toEqual([{ type: 'renderer.message.delta', delta: 'Done.' }])
     expect(
@@ -81,10 +104,10 @@ describe('NanocodexRendererEventMapper', () => {
         native('assistant.message', {
           phase: 'final_answer',
           text: 'Done.'
-        }, 4)
+        }, 5)
       )
     ).toEqual([])
-    expect(mapper.process(native('run.completed', {}, 5))).toEqual([
+    expect(mapper.process(native('run.completed', {}, 6))).toEqual([
       {
         type: 'renderer.done',
         answerMarkdown: 'Done.',
@@ -147,12 +170,17 @@ describe('NanocodexRendererEventMapper', () => {
       ? `${chunk.id}:${chunk.status}`
       : `${chunk.type}:${chunk.type === 'markdown_text' ? chunk.text : chunk.title}`
     )).toEqual([
-      'commentary-1:complete',
+      'nanocodex-thinking:complete',
       'call-1:in_progress',
       'call-1:complete',
-      'commentary-2:complete',
+      'nanocodex-thinking:complete',
       'markdown_text:Done.'
     ])
+    const thinkingUpdates = chunks.filter(
+      (chunk): chunk is Extract<ChatSDKStreamChunk, { type: 'task_update' }> =>
+        chunk.type === 'task_update' && chunk.id === 'nanocodex-thinking'
+    )
+    expect(thinkingUpdates.at(-1)?.details).toBe('Checking.\n\nFound it.')
   })
 
   test('carries run.error into the terminal failure', () => {

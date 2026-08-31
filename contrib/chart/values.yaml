@@ -108,6 +108,13 @@ console:
   # When set, the slackbotv2 deployment also links the first assistant message
   # in a Slack thread to the Console session view; leave empty to omit the link.
   publicUrl: ""
+  # Additional exact Host headers accepted by Rails Host Authorization. Use for
+  # service DNS names that differ from the chart's short in-cluster URL;
+  # publicUrl and the short service host are already included.
+  allowedHosts: []
+  # Optional Sentry DSN for Console web requests and background jobs. Empty by
+  # default, so the Sentry SDK remains disabled unless explicitly configured.
+  sentryDsn: ""
   # Break-glass email/password login. Disable when console is reachable from
   # the public internet and SSO is configured.
   passwordLoginEnabled: true
@@ -156,6 +163,12 @@ console:
   # worker. Keep this aligned with the Console OAuth app users authorize.
   slackDmSync:
     oauthAppSlug: slack
+  # Google Docs metadata and document-content ETL. Enable this to run the
+  # recurring poller and queued Google Docs sync jobs. Disabled jobs exit
+  # without work.
+  # This does not disable Google OAuth or remove previously indexed content.
+  googleDocsSync:
+    enabled: false
   service:
     httpPort: 3000
   # Optional Ingress for the console. Bring your own controller — Tailscale
@@ -189,6 +202,34 @@ console:
   # without this those jobs never execute.
   worker:
     replicaCount: 1
+    resources: {}
+  # Prometheus SQL Exporter for Console database metrics, initially Solid Queue.
+  # This runs as one internal-only replica because every instance would report
+  # the same global database state. The exporter reads a dedicated, read-only DSN
+  # from secretManager.existingSecretName without writing the credential into
+  # its ConfigMap or command-line arguments.
+  sqlExporter:
+    # Enable after CONSOLE_SQLEXPORTER_DATABASE_URL has been added to the
+    # shared infra Secret and its PostgreSQL role has been granted SELECT on
+    # every table queried by a configured collector.
+    enabled: false
+    image:
+      repository: burningalchemist/sql_exporter
+      tag: 0.24.4
+      pullPolicy: IfNotPresent
+    port: 9399
+    # Key in secretManager.existingSecretName containing the complete database
+    # URL for a dedicated read-only PostgreSQL role.
+    databaseUrlSecretKey: CONSOLE_SQLEXPORTER_DATABASE_URL
+    # Used by NetworkPolicy when postgres.enabled=false and the queue database
+    # is externally managed.
+    databasePort: 5432
+    minInterval: 15s
+    scrapeTimeout: 5s
+    metrics:
+      scrapeAnnotations: true
+      path: /metrics
+      annotations: {}
     resources: {}
 
 # Values for the upstream 1Password Connect subchart
@@ -237,6 +278,21 @@ overlays:
   #   toolsSubdir: ""
   #   skillsSubdir: ""
 
+codex:
+  # Operator-defined OpenAI-compatible Responses providers. Each provider is
+  # added to sandbox Codex config, exposed through `--provider <id>`, and given
+  # a hostname-scoped iron-proxy bearer-token replacement. `apiKeyEnv` names a
+  # field in the configured secret source; sandboxes receive only a placeholder.
+  # Example:
+  #   customProviders:
+  #     private_responses:
+  #       name: Private Responses
+  #       baseUrl: https://inference.example.com/v1
+  #       apiKeyEnv: PRIVATE_RESPONSES_API_KEY
+  #       # Optional; callers must pass --model when omitted.
+  #       defaultModel: example-model
+  customProviders: {}
+
 sandbox:
   controller: pod
   image:
@@ -260,6 +316,17 @@ sandbox:
   #   effect: NoSchedule
   # RuntimeClass for sandbox + iron-proxy pods, e.g. gVisor.
   runtimeClassName: ""
+  # ServiceAccount for sandbox pods (session, warm, and workflow-host), e.g.
+  # for cloud workload identity (EKS IRSA). Must already exist in the release
+  # namespace; iron-proxy pods are unaffected, and the Kubernetes API token
+  # stays unmounted (automountServiceAccountToken remains false). Changing
+  # this value drains retained sandbox pods before api-rs enables reuse.
+  serviceAccountName: ""
+  # PriorityClass for sandbox + iron-proxy pods. Point this at a dedicated
+  # (low-priority) PriorityClass to scope a ResourceQuota to sandbox
+  # workloads and let the kubelet/scheduler sacrifice them before the
+  # control plane under node pressure.
+  priorityClassName: ""
   reposPath: ""
   # How the in-sandbox harness authenticates upstream. Single source of truth:
   # the control plane reads it to register the matching iron-proxy credential
@@ -284,6 +351,12 @@ sandbox:
   # mirrored into slackbotv2. This keeps Slack's model/thinking footer aligned
   # with the policy the sandbox actually runs.
   extraEnv: {}
+  telemetry:
+    # Include user prompts, assistant responses, and bounded shell commands on
+    # harness spans.
+    # Token usage, cost, status, session, and tool telemetry remain available
+    # when this is disabled.
+    captureTranscripts: false
   stateVolume:
     enabled: false
     size: 10Gi
@@ -366,10 +439,6 @@ apiRs:
     tag: latest
     pullPolicy: Always
   port: 8080
-  # Sticky percentage of session requests for Codex assigned to Nanocodex.
-  # The API hashes the thread key once and persists the resolved harness on the
-  # session. Set to 0 to keep new Codex requests on Codex.
-  codexNanocodexRolloutPercent: 50
   # Public/local MCP endpoint advertised through OAuth protected-resource
   # metadata. Empty falls back to slackbotv2.mcpPublicUrl.
   mcpPublicUrl: ""
@@ -455,6 +524,7 @@ apiRs:
   activitySummary:
     enabled: false
     model: gpt-5.4-nano
+    # Deprecated compatibility fallback. Prefer OPENAI_BASE_URL in apiRs.extraEnv.
     openaiBaseUrl: https://api.openai.com/v1
     minIntervalSecs: 20
     timeoutSecs: 5
@@ -486,6 +556,10 @@ apiRs:
   terminationGracePeriodSeconds: 35
   extraEnv: {}
   resources: {}
+  # PriorityClass for the api-rs control plane pod itself. Pair with
+  # Guaranteed-QoS resources so runaway sandboxes are evicted before the
+  # control plane.
+  priorityClassName: ""
 
 # Chat SDK Slackbot v2. Forwards Slack events to the api-rs control plane
 # (:8080) and streams responses back. Listens on :3001.
@@ -498,6 +572,12 @@ slackbotv2:
     pullPolicy: Always
   userName: centaur
   assistantStatus: ""
+  # React to mentioned follow-ups while an execution is active, then remove
+  # their reactions after the assistant response is posted. Requires the Slack
+  # app to grant reactions:write. Slackbot disables the feature for the running
+  # process if Slack reports that the scope is missing.
+  steeringReactionEnabled: false
+  steeringReaction: hourglass_flowing_sand
   # Join newly-created public channels after subscribed channel_created events.
   # Requires the Slack app to grant channels:read and channels:join.
   autoJoinCreatedChannels: false
@@ -506,6 +586,9 @@ slackbotv2:
   # one reusable thread here. Inside it, replies may continue without another
   # bot mention unless they explicitly address somebody else.
   investigationsChannelId: ""
+  # Sticky percentage of otherwise-default Codex Slack threads assigned to
+  # Nanocodex. A non-default model selection bypasses the rollout.
+  codexNanocodexRolloutPercent: 0
   # Append model, harness, and reasoning effort to the first live streamed
   # Slack assistant response, every response, or no responses. Independent of
   # the optional Console link below.
@@ -701,6 +784,10 @@ networkPolicy:
   enabled: true
   ingressSourceNamespaces: []
   apiIngressSourceNamespaces: []
+  # Namespaces containing Prometheus-compatible collectors that may scrape
+  # internal metrics-only Services such as the Console queue SQL Exporter.
+  # Same-namespace collectors are always admitted.
+  metricsIngressSourceNamespaces: []
   ingressControllerNamespaces:
     - kube-system
   # Port the kubernetes.default ClusterIP forwards to for the API server. The
