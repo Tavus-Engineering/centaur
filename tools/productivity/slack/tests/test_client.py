@@ -9,15 +9,22 @@ from slack.client import SlackAuthError, SlackClient, SlackRateLimitError
 from slack_sdk.errors import SlackApiError
 
 
-def test_search_token_manifest_covers_native_search_and_file_download_hosts() -> None:
+def test_slack_credentials_replace_only_the_selected_token_placeholder() -> None:
     manifest_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     manifest = tomllib.loads(manifest_path.read_text())
-    optional_secrets = manifest["tool"]["centaur"]["optional_secrets"]
-    search_token = next(
-        secret for secret in optional_secrets if secret["name"] == "SLACK_SEARCH_TOKEN"
-    )
-
-    assert search_token["hosts"] == ["slack.com", "files.slack.com"]
+    config = manifest["tool"]["centaur"]
+    credentials = config["secrets"] + config["optional_secrets"]
+    assert {credential["name"] for credential in credentials} == {
+        "SLACK_BOT_TOKEN",
+        "SLACK_SEARCH_TOKEN",
+    }
+    for credential in credentials:
+        # Unconditional injection overwrites the bot client's Authorization header
+        # with the user's search credential, including on message sends.
+        assert credential.get("mode", "replace") == "replace"
+        assert credential["match_headers"] == ["Authorization"]
+        assert not any(key.startswith("inject_") for key in credential)
+        assert credential["hosts"] == ["slack.com", "files.slack.com"]
 
 
 class _FakeSlackResponse(dict):
