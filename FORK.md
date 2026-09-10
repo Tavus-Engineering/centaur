@@ -29,3 +29,4 @@ line in the PR that syncs it back.
 | 6c71e32f | slackbotv2: keep one reply inline, then continue directed follow-ups in a reusable investigations-channel thread | [#37](https://github.com/Tavus-Engineering/centaur/pull/37) |
 | 1f65c89e | upgrade to Centaur 0.1.129, preserve Watch Agent runtime paths, fix Slack search auth, and add bounded host cleanup | [#38](https://github.com/Tavus-Engineering/centaur/pull/38) |
 | 4664f3731d43273add9b3942f812e8fcc2fa48b8 | repair Watch Agent heartbeat session scope and noninteractive sandbox skill installation | [#39](https://github.com/Tavus-Engineering/centaur/pull/39) |
+| a1ec4acb5f8c2311226839a926b5e6d25f71dd47 | preserve the Slack bot identity by replacing only explicitly selected search-token placeholders | [#40](https://github.com/Tavus-Engineering/centaur/pull/40) |
