@@ -34,7 +34,7 @@ describe('dmChannelId', () => {
     expect(dmChannelId('slack:C0BEAU4B66T:1785.1')).toBeUndefined()
     expect(dmChannelId('slack:G123:1785.1')).toBeUndefined()
     expect(dmChannelId('discord:whatever')).toBeUndefined()
-    expect(dmChannelId('slackbotv2:health:codex-ping:1')).toBeUndefined()
+    expect(dmChannelId('slack:health:codex-ping:1')).toBeUndefined()
   })
 })
 
@@ -55,7 +55,7 @@ describe('DmParticipationGuard', () => {
     const calls: string[] = []
     const guard = guardWith({}, calls)
     expect(await guard.allows('slack:C0BEAU4B66T:1785.1')).toBe(true)
-    expect(await guard.allows('slackbotv2:health:codex-ping:1')).toBe(true)
+    expect(await guard.allows('slack:health:codex-ping:1')).toBe(true)
     expect(calls).toHaveLength(0)
   })
 
