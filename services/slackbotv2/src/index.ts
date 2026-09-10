@@ -2018,8 +2018,9 @@ const CODEX_PING_TIMEOUT_MS = 6 * 60 * 1000
  * harness config, model credentials, live tool catalog, credential grants,
  * and outbound proxy — the same pipeline every Slack request uses.
  */
-async function codexSandboxPing(options: SlackbotV2Options): Promise<void> {
-  const threadId = `slackbotv2:health:codex-ping:${Date.now()}`
+export async function codexSandboxPing(options: SlackbotV2Options): Promise<void> {
+  // The Slack ingress credential is scoped to the slack: session namespace.
+  const threadId = `slack:health:codex-ping:${Date.now()}`
   const message: SlackbotV2ApiMessage = {
     attachments: [],
     author: {
