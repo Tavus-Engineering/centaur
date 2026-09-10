@@ -28,4 +28,4 @@ line in the PR that syncs it back.
 | 35cabfad | align Watch Agent with GPT-5.6 Sol high and verified brokered LogRocket/Coda/Braintrust/SigNoz/GitHub/Linear/Slack tool access | [#36](https://github.com/Tavus-Engineering/centaur/pull/36) |
 | 6c71e32f | slackbotv2: keep one reply inline, then continue directed follow-ups in a reusable investigations-channel thread | [#37](https://github.com/Tavus-Engineering/centaur/pull/37) |
 | 1f65c89e | upgrade to Centaur 0.1.129, preserve Watch Agent runtime paths, fix Slack search auth, and add bounded host cleanup | [#38](https://github.com/Tavus-Engineering/centaur/pull/38) |
-| a16558cfc88685457bb2f6650b088c873e16530d | keep Watch Agent heartbeat sessions within the Slack ingress authorization scope | [#39](https://github.com/Tavus-Engineering/centaur/pull/39) |
+| 4664f3731d43273add9b3942f812e8fcc2fa48b8 | repair Watch Agent heartbeat session scope and noninteractive sandbox skill installation | [#39](https://github.com/Tavus-Engineering/centaur/pull/39) |
