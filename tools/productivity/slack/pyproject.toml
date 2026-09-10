@@ -31,5 +31,6 @@ secrets = [
     {type = "http", name = "SLACK_BOT_TOKEN", match_headers = ["Authorization"], hosts = ["slack.com", "files.slack.com"]},
 ]
 optional_secrets = [
-    {type = "http", name = "SLACK_SEARCH_TOKEN", mode = "inject", inject_header = "Authorization", inject_formatter = "Bearer {{ .Value }}", hosts = ["slack.com", "files.slack.com"]}
+    # Select the search identity only when the client sends its placeholder.
+    {type = "http", name = "SLACK_SEARCH_TOKEN", match_headers = ["Authorization"], hosts = ["slack.com", "files.slack.com"]}
 ]
