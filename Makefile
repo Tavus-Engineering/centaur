@@ -37,6 +37,7 @@ test-host-cleanup:
 
 deploy:
 	set -euo pipefail; \
+	CENTAUR_HOST_CLEANUP_CHECK_ONLY=1 contrib/scripts/host-disk-cleanup.sh; \
 	SHA="$$(git rev-parse --short HEAD)"; \
 	FULL_SHA="$$(git rev-parse HEAD)"; \
 	API_IMAGE="$(CENTAUR_API_IMAGE_REPOSITORY):fork-$${SHA}"; \

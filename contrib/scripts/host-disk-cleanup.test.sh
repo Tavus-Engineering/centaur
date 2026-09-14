@@ -6,6 +6,17 @@ test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 command_log="$test_dir/commands.log"
 
+cat >"$test_dir/df" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${DF_FAIL:-0}" == "0" ]] || exit 1
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+[[ "${DF_EMPTY:-0}" == "0" ]] || exit 0
+printf '/dev/test 1000000 0 %s 0%% /\n' "${AVAILABLE_KIB:-500000}"
+MOCK
+chmod +x "$test_dir/df"
+export DF_BIN="$test_dir/df"
+
 cat >"$test_dir/docker" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -102,5 +113,61 @@ if grep -Fq 'image rm' "$command_log"; then
   echo "tagged images were pruned without a Kubernetes inventory" >&2
   exit 1
 fi
+
+# Successful no-op pruning must not hide the disk pressure that caused an outage.
+: >"$command_log"
+status=0
+COMMAND_LOG="$command_log" \
+DOCKER_BIN="$test_dir/docker" \
+KUBECTL_BIN="$test_dir/kubectl" \
+DATE_BIN="$test_dir/date" \
+AVAILABLE_KIB=40000 \
+  "$repo_root/contrib/scripts/host-disk-cleanup.sh" >"$test_dir/low-space.log" 2>&1 || status=$?
+[[ "$status" == "1" ]]
+grep -Fq 'insufficient disk headroom' "$test_dir/low-space.log"
+grep -Fq 'builder prune' "$command_log"
+
+# The deployment/monitoring check must never contact Docker or Kubernetes.
+: >"$command_log"
+for available in 0 199999 200000 500000; do
+  status=0
+  COMMAND_LOG="$command_log" \
+  DOCKER_BIN="$test_dir/docker" \
+  KUBECTL_BIN="$test_dir/kubectl" \
+  AVAILABLE_KIB="$available" \
+  CENTAUR_HOST_CLEANUP_CHECK_ONLY=1 \
+    "$repo_root/contrib/scripts/host-disk-cleanup.sh" >/dev/null 2>&1 || status=$?
+  if ((available < 200000)); then
+    [[ "$status" == "1" ]]
+  else
+    [[ "$status" == "0" ]]
+  fi
+done
+[[ ! -s "$command_log" ]]
+
+AVAILABLE_KIB=300000 CENTAUR_DISK_MIN_FREE_PERCENT=30 CENTAUR_HOST_CLEANUP_CHECK_ONLY=1 \
+  "$repo_root/contrib/scripts/host-disk-cleanup.sh" >/dev/null
+for invalid in 0 100 invalid 020; do
+  status=0
+  CENTAUR_DISK_MIN_FREE_PERCENT="$invalid" CENTAUR_HOST_CLEANUP_CHECK_ONLY=1 \
+    "$repo_root/contrib/scripts/host-disk-cleanup.sh" >/dev/null 2>&1 || status=$?
+  [[ "$status" == "2" ]]
+done
+for measurement in failure malformed empty; do
+  status=0
+  DF_FAIL="$([[ "$measurement" == failure ]] && echo 1 || echo 0)" \
+  DF_EMPTY="$([[ "$measurement" == empty ]] && echo 1 || echo 0)" \
+  AVAILABLE_KIB=unknown CENTAUR_HOST_CLEANUP_CHECK_ONLY=1 \
+    "$repo_root/contrib/scripts/host-disk-cleanup.sh" >/dev/null 2>&1 || status=$?
+  [[ "$status" == "2" ]]
+done
+
+: >"$command_log"
+status=0
+PATH="$test_dir:$PATH" COMMAND_LOG="$command_log" AVAILABLE_KIB=40000 \
+  make --no-print-directory -s -C "$repo_root" deploy >"$test_dir/deploy.log" 2>&1 || status=$?
+[[ "$status" != "0" ]]
+grep -Fq 'insufficient disk headroom' "$test_dir/deploy.log"
+[[ ! -s "$command_log" ]]
 
 echo "host disk cleanup test: PASS"

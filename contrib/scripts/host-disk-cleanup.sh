@@ -4,13 +4,16 @@ set -euo pipefail
 docker_bin="${DOCKER_BIN:-docker}"
 kubectl_bin="${KUBECTL_BIN:-kubectl}"
 date_bin="${DATE_BIN:-date}"
+df_bin="${DF_BIN:-df}"
 namespace="${CENTAUR_NAMESPACE:-centaur}"
 image_prefix="${CENTAUR_IMAGE_PREFIX:-centaur-}"
 generations_to_keep="${CENTAUR_IMAGE_GENERATIONS_TO_KEEP:-3}"
 builder_max_used_space="${CENTAUR_BUILD_CACHE_MAX_USED_SPACE:-30GB}"
 terminal_pod_max_age_secs="${CENTAUR_TERMINAL_POD_MAX_AGE_SECS:-86400}"
 disk_path="${CENTAUR_DISK_PATH:-/}"
+min_free_percent="${CENTAUR_DISK_MIN_FREE_PERCENT:-20}"
 dry_run="${CENTAUR_HOST_CLEANUP_DRY_RUN:-0}"
+check_only="${CENTAUR_HOST_CLEANUP_CHECK_ONLY:-0}"
 
 die() {
   echo "centaur host cleanup: $*" >&2
@@ -24,6 +27,32 @@ die() {
 [[ "$terminal_pod_max_age_secs" =~ ^[0-9]+$ ]] \
   || die "CENTAUR_TERMINAL_POD_MAX_AGE_SECS must be a non-negative integer"
 [[ "$dry_run" =~ ^(0|1)$ ]] || die "CENTAUR_HOST_CLEANUP_DRY_RUN must be 0 or 1"
+[[ "$check_only" =~ ^(0|1)$ ]] || die "CENTAUR_HOST_CLEANUP_CHECK_ONLY must be 0 or 1"
+[[ "$min_free_percent" =~ ^([1-9]|[1-9][0-9])$ ]] \
+  || die "CENTAUR_DISK_MIN_FREE_PERCENT must be an integer from 1 to 99"
+
+check_disk_headroom() {
+  local disk_stats total_kib available_kib free_percent
+  disk_stats="$(LC_ALL=C "$df_bin" -Pk "$disk_path")" \
+    || die "cannot measure disk headroom for $disk_path"
+  read -r total_kib available_kib < <(awk 'NR == 2 { print $2, $4 }' <<<"$disk_stats") \
+    || die "missing disk headroom measurement for $disk_path"
+  [[ "$total_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ ]] \
+    || die "invalid disk headroom measurement for $disk_path"
+  free_percent=$((available_kib * 100 / total_kib))
+  echo "centaur host cleanup: $disk_path has $free_percent% free ($available_kib KiB); required: $min_free_percent%"
+  if ((available_kib * 100 < total_kib * min_free_percent)); then
+    echo "centaur host cleanup: insufficient disk headroom; add capacity or reclaim owned data before Kubernetes eviction. Cache cleanup alone may not recover enough space." >&2
+    return 1
+  fi
+}
+
+# Used by deployment preflight and host monitoring without pruning anything.
+if [[ "$check_only" == "1" ]]; then
+  check_disk_headroom
+  exit 0
+fi
+
 command -v "$docker_bin" >/dev/null 2>&1 || die "docker command not found: $docker_bin"
 
 print_command() {
@@ -56,7 +85,7 @@ normalize_image_ref() {
 }
 
 echo "centaur host cleanup: disk usage before"
-df -h "$disk_path"
+"$df_bin" -h "$disk_path"
 
 # Bound the default builder even when a burst of recent deploys creates more
 # cache than the host can safely carry. This never removes images or containers.
@@ -157,4 +186,5 @@ while IFS= read -r reference; do
 done <"$old_images_file"
 
 echo "centaur host cleanup: disk usage after"
-df -h "$disk_path"
+"$df_bin" -h "$disk_path"
+check_disk_headroom
