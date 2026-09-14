@@ -3,14 +3,21 @@ set -euo pipefail
 
 docker_bin="${DOCKER_BIN:-docker}"
 kubectl_bin="${KUBECTL_BIN:-kubectl}"
+kubectl_command=("$kubectl_bin")
+if [[ -n "${CENTAUR_KUBE_CONTEXT:-}" ]]; then
+  kubectl_command+=(--context "$CENTAUR_KUBE_CONTEXT")
+fi
 date_bin="${DATE_BIN:-date}"
+df_bin="${DF_BIN:-df}"
 namespace="${CENTAUR_NAMESPACE:-centaur}"
 image_prefix="${CENTAUR_IMAGE_PREFIX:-centaur-}"
 generations_to_keep="${CENTAUR_IMAGE_GENERATIONS_TO_KEEP:-3}"
 builder_max_used_space="${CENTAUR_BUILD_CACHE_MAX_USED_SPACE:-30GB}"
 terminal_pod_max_age_secs="${CENTAUR_TERMINAL_POD_MAX_AGE_SECS:-86400}"
 disk_path="${CENTAUR_DISK_PATH:-/}"
+min_free_percent="${CENTAUR_DISK_MIN_FREE_PERCENT:-20}"
 dry_run="${CENTAUR_HOST_CLEANUP_DRY_RUN:-0}"
+check_only="${CENTAUR_HOST_CLEANUP_CHECK_ONLY:-0}"
 
 die() {
   echo "centaur host cleanup: $*" >&2
@@ -24,6 +31,32 @@ die() {
 [[ "$terminal_pod_max_age_secs" =~ ^[0-9]+$ ]] \
   || die "CENTAUR_TERMINAL_POD_MAX_AGE_SECS must be a non-negative integer"
 [[ "$dry_run" =~ ^(0|1)$ ]] || die "CENTAUR_HOST_CLEANUP_DRY_RUN must be 0 or 1"
+[[ "$check_only" =~ ^(0|1)$ ]] || die "CENTAUR_HOST_CLEANUP_CHECK_ONLY must be 0 or 1"
+[[ "$min_free_percent" =~ ^([1-9]|[1-9][0-9])$ ]] \
+  || die "CENTAUR_DISK_MIN_FREE_PERCENT must be an integer from 1 to 99"
+
+check_disk_headroom() {
+  local disk_stats total_kib available_kib free_percent
+  disk_stats="$(LC_ALL=C "$df_bin" -Pk "$disk_path")" \
+    || die "cannot measure disk headroom for $disk_path"
+  read -r total_kib available_kib < <(awk 'NR == 2 { print $2, $4 }' <<<"$disk_stats") \
+    || die "missing disk headroom measurement for $disk_path"
+  [[ "$total_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ ]] \
+    || die "invalid disk headroom measurement for $disk_path"
+  free_percent=$((available_kib * 100 / total_kib))
+  echo "centaur host cleanup: $disk_path has $free_percent% free ($available_kib KiB); required: $min_free_percent%"
+  if ((available_kib * 100 < total_kib * min_free_percent)); then
+    echo "centaur host cleanup: insufficient disk headroom; add capacity or reclaim owned data before Kubernetes eviction. Cache cleanup alone may not recover enough space." >&2
+    return 1
+  fi
+}
+
+# Used by deployment preflight and host monitoring without pruning anything.
+if [[ "$check_only" == "1" ]]; then
+  check_disk_headroom
+  exit 0
+fi
+
 command -v "$docker_bin" >/dev/null 2>&1 || die "docker command not found: $docker_bin"
 
 print_command() {
@@ -42,10 +75,10 @@ run_docker() {
 
 run_kubectl() {
   if [[ "$dry_run" == "1" ]]; then
-    print_command "$kubectl_bin" "$@"
+    print_command "${kubectl_command[@]}" "$@"
     return 0
   fi
-  "$kubectl_bin" "$@"
+  "${kubectl_command[@]}" "$@"
 }
 
 normalize_image_ref() {
@@ -56,7 +89,7 @@ normalize_image_ref() {
 }
 
 echo "centaur host cleanup: disk usage before"
-df -h "$disk_path"
+"$df_bin" -h "$disk_path"
 
 # Bound the default builder even when a burst of recent deploys creates more
 # cache than the host can safely carry. This never removes images or containers.
@@ -75,7 +108,7 @@ if command -v "$kubectl_bin" >/dev/null 2>&1; then
   : >"$terminal_pods_file"
   terminal_inventory_available=1
   for phase in Failed Succeeded; do
-    if ! "$kubectl_bin" -n "$namespace" get pods \
+    if ! "${kubectl_command[@]}" -n "$namespace" get pods \
         -l centaur.ai/managed-by=api-rs \
         --field-selector="status.phase=$phase" \
         -o jsonpath='{range .items[*]}{.metadata.creationTimestamp}{"\t"}{.metadata.name}{"\n"}{end}' \
@@ -110,12 +143,12 @@ if command -v "$kubectl_bin" >/dev/null 2>&1; then
   # weeks-old, multi-gigabyte runtime generations after their execution ended.
   # Workload templates plus Pending and Running pods cover every image that can
   # still start or currently backs a live Centaur process.
-  if workload_images="$($kubectl_bin -n "$namespace" \
+  if workload_images="$("${kubectl_command[@]}" -n "$namespace" \
       get deployments,statefulsets,daemonsets \
       -o jsonpath='{..image}' 2>/dev/null)" \
-      && pending_images="$($kubectl_bin -n "$namespace" get pods \
+      && pending_images="$("${kubectl_command[@]}" -n "$namespace" get pods \
         --field-selector='status.phase=Pending' -o jsonpath='{..image}' 2>/dev/null)" \
-      && running_images="$($kubectl_bin -n "$namespace" get pods \
+      && running_images="$("${kubectl_command[@]}" -n "$namespace" get pods \
         --field-selector='status.phase=Running' -o jsonpath='{..image}' 2>/dev/null)"; then
     kube_inventory_available=1
     for image in $workload_images $pending_images $running_images; do
@@ -157,4 +190,5 @@ while IFS= read -r reference; do
 done <"$old_images_file"
 
 echo "centaur host cleanup: disk usage after"
-df -h "$disk_path"
+"$df_bin" -h "$disk_path"
+check_disk_headroom
