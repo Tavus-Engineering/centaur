@@ -3,6 +3,10 @@ set -euo pipefail
 
 docker_bin="${DOCKER_BIN:-docker}"
 kubectl_bin="${KUBECTL_BIN:-kubectl}"
+kubectl_command=("$kubectl_bin")
+if [[ -n "${CENTAUR_KUBE_CONTEXT:-}" ]]; then
+  kubectl_command+=(--context "$CENTAUR_KUBE_CONTEXT")
+fi
 date_bin="${DATE_BIN:-date}"
 df_bin="${DF_BIN:-df}"
 namespace="${CENTAUR_NAMESPACE:-centaur}"
@@ -71,10 +75,10 @@ run_docker() {
 
 run_kubectl() {
   if [[ "$dry_run" == "1" ]]; then
-    print_command "$kubectl_bin" "$@"
+    print_command "${kubectl_command[@]}" "$@"
     return 0
   fi
-  "$kubectl_bin" "$@"
+  "${kubectl_command[@]}" "$@"
 }
 
 normalize_image_ref() {
@@ -104,7 +108,7 @@ if command -v "$kubectl_bin" >/dev/null 2>&1; then
   : >"$terminal_pods_file"
   terminal_inventory_available=1
   for phase in Failed Succeeded; do
-    if ! "$kubectl_bin" -n "$namespace" get pods \
+    if ! "${kubectl_command[@]}" -n "$namespace" get pods \
         -l centaur.ai/managed-by=api-rs \
         --field-selector="status.phase=$phase" \
         -o jsonpath='{range .items[*]}{.metadata.creationTimestamp}{"\t"}{.metadata.name}{"\n"}{end}' \
@@ -139,12 +143,12 @@ if command -v "$kubectl_bin" >/dev/null 2>&1; then
   # weeks-old, multi-gigabyte runtime generations after their execution ended.
   # Workload templates plus Pending and Running pods cover every image that can
   # still start or currently backs a live Centaur process.
-  if workload_images="$($kubectl_bin -n "$namespace" \
+  if workload_images="$("${kubectl_command[@]}" -n "$namespace" \
       get deployments,statefulsets,daemonsets \
       -o jsonpath='{..image}' 2>/dev/null)" \
-      && pending_images="$($kubectl_bin -n "$namespace" get pods \
+      && pending_images="$("${kubectl_command[@]}" -n "$namespace" get pods \
         --field-selector='status.phase=Pending' -o jsonpath='{..image}' 2>/dev/null)" \
-      && running_images="$($kubectl_bin -n "$namespace" get pods \
+      && running_images="$("${kubectl_command[@]}" -n "$namespace" get pods \
         --field-selector='status.phase=Running' -o jsonpath='{..image}' 2>/dev/null)"; then
     kube_inventory_available=1
     for image in $workload_images $pending_images $running_images; do

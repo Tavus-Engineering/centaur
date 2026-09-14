@@ -170,4 +170,13 @@ PATH="$test_dir:$PATH" COMMAND_LOG="$command_log" AVAILABLE_KIB=40000 \
 grep -Fq 'insufficient disk headroom' "$test_dir/deploy.log"
 [[ ! -s "$command_log" ]]
 
+COMMAND_LOG="$command_log" DOCKER_BIN="$test_dir/docker" \
+KUBECTL_BIN="$test_dir/kubectl" DATE_BIN="$test_dir/date" CENTAUR_KUBE_CONTEXT=local-test \
+  "$repo_root/contrib/scripts/host-disk-cleanup.sh" >/dev/null
+grep -Fqx 'kubectl --context local-test -n centaur delete pod old-failed --wait=true' "$command_log"
+if grep '^kubectl ' "$command_log" | grep -v '^kubectl --context local-test '; then
+  echo "Kubernetes command ignored the configured context" >&2
+  exit 1
+fi
+
 echo "host disk cleanup test: PASS"
